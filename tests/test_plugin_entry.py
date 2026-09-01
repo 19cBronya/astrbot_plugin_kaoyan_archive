@@ -43,12 +43,23 @@ class _FakeContext:
     def __init__(self) -> None:
         self.routes = []
         self.llm_calls = []
+        self.runtime_configs = {}
+        self.astrbot_config_mgr = SimpleNamespace(
+            get_conf_info=lambda umo: {
+                "id": "default",
+                "name": "default",
+                "path": "cmd_config.json",
+            }
+        )
 
     def register_web_api(self, route, handler, methods, description) -> None:
         self.routes.append((route, handler, methods, description))
 
     async def get_current_chat_provider_id(self, umo: str) -> str:
         return "classifier-provider"
+
+    def get_config(self, umo: str | None = None):
+        return self.runtime_configs.get(umo, {"plugin_set": ["*"]})
 
     async def llm_generate(self, **kwargs):
         self.llm_calls.append(kwargs)
@@ -200,6 +211,46 @@ def test_plugin_gate_requires_private_and_exact_umo(monkeypatch, tmp_path: Path)
 
     asyncio.run(plugin.initialize())
     assert plugin.store.db_path.exists()
+
+
+def test_routing_status_reports_profile_that_excludes_plugin(monkeypatch, tmp_path: Path) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    umo = "napcat:FriendMessage:10001"
+    context = _FakeContext()
+    context.runtime_configs[umo] = {"plugin_set": ["another_plugin"]}
+    context.astrbot_config_mgr = SimpleNamespace(
+        get_conf_info=lambda value: {
+            "id": "profile-id",
+            "name": "私聊答疑",
+            "path": "abconf.json",
+        }
+    )
+    plugin = module.KaoyanArchivePlugin(
+        context,
+        _Config(enabled=True, umo_whitelist=[umo]),
+    )
+
+    status = plugin._routing_statuses()[0]
+
+    assert status["handler_enabled"] is False
+    assert status["config_name"] == "私聊答疑"
+    assert status["plugin_set"] == ["another_plugin"]
+    assert module.PLUGIN_NAME in status["warning"]
+
+
+def test_routing_status_accepts_wildcard_or_explicit_plugin(monkeypatch, tmp_path: Path) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    umo = "napcat:FriendMessage:10001"
+    context = _FakeContext()
+    plugin = module.KaoyanArchivePlugin(
+        context,
+        _Config(enabled=True, umo_whitelist=[umo]),
+    )
+
+    assert plugin._routing_status(umo)["handler_enabled"] is True
+
+    context.runtime_configs[umo] = {"plugin_set": [module.PLUGIN_NAME]}
+    assert plugin._routing_status(umo)["handler_enabled"] is True
 
 
 def test_normal_message_is_observed_without_interception(monkeypatch, tmp_path: Path) -> None:

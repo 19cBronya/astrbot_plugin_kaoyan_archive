@@ -83,6 +83,25 @@ function renderConfig() {
     select.add(new Option(subject, subject));
   }
   select.value = selected;
+  renderRoutingStatus(config.routing_status || []);
+}
+
+function renderRoutingStatus(statuses) {
+  const container = $("routing-status");
+  container.replaceChildren();
+  for (const status of statuses) {
+    const item = document.createElement("div");
+    item.className = `routing-item ${status.handler_enabled ? "ok" : "error"}`;
+    const title = document.createElement("strong");
+    title.textContent = status.handler_enabled ? "路由已启用插件" : "路由未启用插件";
+    const detail = document.createElement("span");
+    const profile = status.config_name || status.config_id || "当前配置";
+    detail.textContent = status.handler_enabled
+      ? `${profile} · ${status.umo}`
+      : status.warning || `${profile} 未包含本插件`;
+    item.append(title, detail);
+    container.append(item);
+  }
 }
 
 function statusType(status) {
@@ -269,6 +288,7 @@ $("save-config").addEventListener("click", async () => {
   try {
     const result = await apiPost("config", { umo_whitelist: whitelist });
     state.config.umo_whitelist = result.umo_whitelist;
+    state.config.routing_status = result.routing_status || [];
     renderConfig();
     renderStats();
     $("save-state").textContent = "已保存";

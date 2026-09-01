@@ -33,6 +33,8 @@ default:FriendMessage:123456789
 
 白名单为空时，插件不会记录、分析或调用任何模型。
 
+如果该 UMO 被路由到独立 AstrBot 配置（日志前缀会显示配置名称），还必须确认该配置的“插件集合 / `plugin_set`”为“全部插件”，或显式包含 `astrbot_plugin_kaoyan_archive`。AstrBot 会先按这里过滤处理器，再把消息交给插件；仅填写插件自己的 UMO 白名单不能绕过框架级过滤。Plugin Page 会逐条检查白名单 UMO，并显示“路由已启用插件”或明确的排除警告。
+
 主要配置：
 
 | 配置 | 默认值 | 说明 |

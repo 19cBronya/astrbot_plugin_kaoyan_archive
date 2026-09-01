@@ -23,7 +23,7 @@ from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.2.0"
+PLUGIN_VERSION = "0.2.1"
 FRAMEWORK_COMMANDS = frozenset({"status", "archive", "retry", "latest"})
 FRAMEWORK_COMMAND_HELP = (
     "/kaoyan status",
@@ -87,6 +87,12 @@ class KaoyanArchivePlugin(Star):
         if not self._should_process(event):
             return
 
+        logger.info(
+            "白名单私聊已进入归档处理器 umo=%s message_id=%s",
+            event.unified_msg_origin,
+            str(getattr(event.message_obj, "message_id", "") or ""),
+        )
+
         framework_command = self._framework_command_name(event.message_str or "")
         if framework_command:
             analysis = self._framework_command_analysis(framework_command)
@@ -105,6 +111,12 @@ class KaoyanArchivePlugin(Star):
         event_id = await self._persist_user_event(event, analysis)
         event.set_extra(f"{PLUGIN_NAME}:event_id", event_id)
         event.set_extra(f"{PLUGIN_NAME}:analysis", analysis.as_dict())
+        logger.info(
+            "原始消息已持久化 umo=%s event_id=%s kind=%s",
+            event.unified_msg_origin,
+            event_id,
+            analysis.kind.value,
+        )
 
         if analysis.kind is MessageKind.ARCHIVE:
             question = await self.store.create_question_interval(
@@ -355,6 +367,7 @@ class KaoyanArchivePlugin(Star):
                         self.config.get("classification_provider_id", "") or ""
                     ),
                     "framework_commands": list(FRAMEWORK_COMMAND_HELP),
+                    "routing_status": self._routing_statuses(),
                 }
             )
         payload = await request.json(default={})
@@ -368,7 +381,13 @@ class KaoyanArchivePlugin(Star):
             return error_response("invalid UMO", status_code=400)
         self.config["umo_whitelist"] = cleaned
         self.config.save_config()
-        return json_response({"saved": True, "umo_whitelist": cleaned})
+        return json_response(
+            {
+                "saved": True,
+                "umo_whitelist": cleaned,
+                "routing_status": self._routing_statuses(),
+            }
+        )
 
     async def web_questions(self):
         if response := self._require_dashboard_user():
@@ -442,6 +461,49 @@ class KaoyanArchivePlugin(Star):
 
     def _umo_whitelist(self) -> list[str]:
         return self._cfg_list("umo_whitelist")
+
+    def _routing_statuses(self) -> list[dict[str, Any]]:
+        """Explain AstrBot profile-level handler filtering for each allowed UMO."""
+        return [self._routing_status(umo) for umo in self._umo_whitelist()]
+
+    def _routing_status(self, umo: str) -> dict[str, Any]:
+        status: dict[str, Any] = {
+            "umo": umo,
+            "config_id": "",
+            "config_name": "",
+            "plugin_set": [],
+            "handler_enabled": True,
+            "warning": "",
+        }
+        try:
+            runtime_config = self.context.get_config(umo=umo)
+            plugin_set = runtime_config.get("plugin_set", ["*"])
+            if not isinstance(plugin_set, list):
+                plugin_set = []
+            plugin_set = [str(item) for item in plugin_set]
+            # Match AstrBot v4.27.5 waking_check/star_handler behavior exactly:
+            # only the literal ["*"] means all plugins.
+            handler_enabled = plugin_set == ["*"] or PLUGIN_NAME in plugin_set
+            status["plugin_set"] = plugin_set
+            status["handler_enabled"] = handler_enabled
+
+            manager = getattr(self.context, "astrbot_config_mgr", None)
+            get_conf_info = getattr(manager, "get_conf_info", None)
+            if callable(get_conf_info):
+                info = get_conf_info(umo)
+                if isinstance(info, dict):
+                    status["config_id"] = str(info.get("id", "") or "")
+                    status["config_name"] = str(info.get("name", "") or "")
+
+            if not handler_enabled:
+                profile = status["config_name"] or status["config_id"] or "当前路由配置"
+                status["warning"] = (
+                    f"{profile} 的插件集合未包含 {PLUGIN_NAME}；"
+                    "AstrBot 会在消息到达插件前过滤本处理器。"
+                )
+        except Exception as exc:
+            status["warning"] = f"无法读取 AstrBot 路由配置：{type(exc).__name__}: {exc}"
+        return status
 
     def _cfg_list(self, key: str) -> list[str]:
         value = self.config.get(key, [])

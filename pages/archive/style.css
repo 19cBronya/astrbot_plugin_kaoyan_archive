@@ -103,6 +103,12 @@ textarea:focus, input:focus, select:focus { border-color: var(--accent); box-sha
 .muted, .muted-text, .inline-state { color: var(--muted); }
 
 .divider { height: 1px; margin: 22px 0; background: var(--line); }
+.routing-status { display: grid; gap: 8px; margin-top: 14px; }
+.routing-item { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 11px; font-size: 0.74rem; line-height: 1.45; }
+.routing-item strong { color: var(--accent); }
+.routing-item span { color: var(--muted); overflow-wrap: anywhere; }
+.routing-item.error { border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); background: color-mix(in srgb, var(--danger) 7%, transparent); }
+.routing-item.error strong { color: var(--danger); }
 .config-summary { display: grid; gap: 16px; margin: 0; }
 .config-summary div { display: grid; gap: 5px; }
 .config-summary dt { color: var(--muted); font-size: 0.76rem; }
