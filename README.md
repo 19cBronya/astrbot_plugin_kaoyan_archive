@@ -1,14 +1,16 @@
 # astrbot_plugin_kaoyan_archive
 
-AstrBot 私聊考研答疑归档插件。它不会接管或修改 AstrBot 的正常回答，只在精确配置的私聊 UMO 中旁路保存消息，并在用户表达“我问完了”时把上一结束边界到当前边界之间的有效对话整理为一道题目。
+AstrBot 私聊考研答疑归档插件。它不会接管或修改 AstrBot 的正常回答，只在精确配置的私聊 UMO 中旁路保存消息。每条自然语言消息由 LLM 判断为“问题、归档边界、其他软指令”，遇到归档边界后把上一边界到当前边界之间的有效对话整理为一道题目。
 
 ## 当前能力
 
 - UMO 白名单默认为空；群聊和不在白名单内的私聊完全忽略。
 - 保存用户消息、AI 回答、原始消息链、平台消息 ID、模型信息及图片/文件附件。
 - 原始事件表通过 SQLite 触发器禁止更新和删除。
-- 识别“我问完了”“整理入库”等结束短语，并优先排除“我还没问完”等否定表达。
-- 从上一结束边界之后取到本次边界，过滤 `/`、`!` 指令及配置的自然语言控制操作。
+- 白名单门禁通过后，每条自然语言消息调用一次分类 Provider；分类规则和 Prompt 固定在插件代码中，不维护关键词表。
+- 自然语言分类为 `question`、`archive` 或 `instruction`；软指令保存但不进入题目正文。
+- `/kaoyan ...` 使用 AstrBot 的命令注册机制，不自定义或配置命令前缀。
+- 从上一归档边界之后取到本次边界，排除框架命令和 LLM 判定的软指令。
 - 归档时调用一次可配置的 AstrBot Provider，生成科目、标题和 Markdown 摘要；模型不可用时自动使用本地规则，不影响编号入库。
 - 按科目事务化分配连续 ID，例如 `操作系统0001`。
 - 提供 AstrBot Plugin Page：总览、UMO 白名单、题目筛选、完整时间线、软删除、恢复和失败重试。
@@ -17,7 +19,7 @@ AstrBot 私聊考研答疑归档插件。它不会接管或修改 AstrBot 的正
 
 要求 AstrBot `>=4.27.2,<5`，首个正式适配平台为 OneBot v11 / `aiocqhttp`。
 
-本仓库目前仅用于本地开发，没有发布到插件市场，也没有配置可推送的 `origin`。开发测试时可把目录放入：
+本仓库目前仅用于开发，没有发布到 AstrBot 插件市场。开发测试时可把目录放入：
 
 ```text
 AstrBot/data/plugins/astrbot_plugin_kaoyan_archive/
@@ -37,11 +39,10 @@ default:FriendMessage:123456789
 | --- | --- | --- |
 | `enabled` | `true` | 总开关 |
 | `umo_whitelist` | `[]` | 精确私聊 UMO 白名单 |
-| `end_phrases` | 我问完了等 | 结束边界短语 |
-| `command_prefixes` | `/`, `!` | 不进入题目正文的指令前缀 |
+| `classification_provider_id` | 空 | 逐消息分类模型；空值表示沿用该 UMO 当前 Provider |
 | `subjects` | 数学、英语、政治、408 各科等 | 科目目录 |
-| `enable_ai_archive` | `true` | 只在归档边界调用一次模型 |
-| `archive_provider_id` | 空 | 空值表示沿用该 UMO 当前 Provider |
+| `enable_ai_archive` | `true` | 边界建立后再调用模型生成归档摘要 |
+| `archive_provider_id` | 空 | 归档整理模型；空值表示沿用该 UMO 当前 Provider |
 | `max_archive_chars` | `30000` | 归档模型输入字符上限，完整原文不截断保存 |
 | `max_attachment_mb` | `20` | 单个附件保存上限 |
 | `send_archive_notice` | `true` | 完成后主动发送题号通知 |
@@ -60,11 +61,21 @@ default:FriendMessage:123456789
 我问完了                  ┘ 当前边界，保存但排除
 ```
 
-如果结束短语和正文出现在同一条消息中，例如“最后补充……我问完了”，插件会移除结束短语并保留其余正文。
+如果归档意图和正文出现在同一条消息中，例如“最后补充……我问完了”，分类 LLM 会把补充内容放入 `content`，该事件同时作为本题正文和结束边界。
 
-## 调试命令
+## 消息判定顺序
 
-命令只在白名单私聊中工作：
+1. 群聊或白名单外 UMO 立即返回，不保存也不调用模型。
+2. 已注册的 `/kaoyan ...` 命令交给 AstrBot 命令系统，不调用自然语言分类器。
+3. 其余每条用户消息调用一次分类 Provider，并保存分类 Provider、模型和 Prompt 版本。
+4. `question` 进入当前题目正文；`archive` 建立边界；`instruction` 保存为 `excluded`。
+5. 分类调用失败时完整原文仍按 `question` 保存，并记录失败信息；可使用 `/kaoyan archive` 手动恢复边界。
+
+因此，一轮普通问答会包含 AstrBot 原本的答疑调用和插件新增的一次分类调用；结束归档时还可能增加一次归档整理调用。
+
+## AstrBot 注册命令
+
+命令内容固定在插件中，只在白名单私聊中工作。命令前缀由 AstrBot 框架处理，不提供插件配置：
 
 - `/kaoyan status`：查看当前 UMO 的事件与归档数量。
 - `/kaoyan archive`：手动建立结束边界并提交归档。

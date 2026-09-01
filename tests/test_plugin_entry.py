@@ -42,9 +42,23 @@ class _Star:
 class _FakeContext:
     def __init__(self) -> None:
         self.routes = []
+        self.llm_calls = []
 
     def register_web_api(self, route, handler, methods, description) -> None:
         self.routes.append((route, handler, methods, description))
+
+    async def get_current_chat_provider_id(self, umo: str) -> str:
+        return "classifier-provider"
+
+    async def llm_generate(self, **kwargs):
+        self.llm_calls.append(kwargs)
+        return SimpleNamespace(
+            completion_text=(
+                '{"kind":"question","content":"操作系统的进程是什么？",'
+                '"intent":"new_question","confidence":0.99}'
+            ),
+            raw_completion=SimpleNamespace(model="classifier-model"),
+        )
 
 
 class _Config(dict):
@@ -194,9 +208,6 @@ def test_normal_message_is_observed_without_interception(monkeypatch, tmp_path: 
     config = _Config(
         enabled=True,
         umo_whitelist=["default:FriendMessage:10001"],
-        end_phrases=["我问完了"],
-        command_prefixes=["/"],
-        control_phrases=["查询历史"],
     )
     plugin = module.KaoyanArchivePlugin(context, config)
     extras = {}
@@ -230,3 +241,38 @@ def test_normal_message_is_observed_without_interception(monkeypatch, tmp_path: 
     assert stats["events"] == 1
     assert stats["questions"] == 0
     assert extras[f"{module.PLUGIN_NAME}:analysis"]["kind"] == "question"
+    assert len(context.llm_calls) == 1
+
+
+def test_registered_framework_command_skips_classifier(monkeypatch, tmp_path: Path) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    context = _FakeContext()
+    plugin = module.KaoyanArchivePlugin(
+        context,
+        _Config(enabled=True, umo_whitelist=["default:FriendMessage:10001"]),
+    )
+    extras = {}
+    event = SimpleNamespace(
+        is_private_chat=lambda: True,
+        unified_msg_origin="default:FriendMessage:10001",
+        # AstrBot removes its configured wake prefix before plugin handlers run.
+        message_str="kaoyan status",
+        message_obj=SimpleNamespace(
+            message_id="command-1",
+            timestamp=1,
+            raw_message={"message": "/kaoyan status"},
+        ),
+        get_messages=lambda: [],
+        get_sender_id=lambda: "10001",
+        get_sender_name=lambda: "student",
+        set_extra=lambda key, value: extras.__setitem__(key, value),
+    )
+
+    asyncio.run(plugin.initialize())
+    asyncio.run(plugin.capture_private_message(event))
+
+    assert context.llm_calls == []
+    assert extras[f"{module.PLUGIN_NAME}:analysis"]["kind"] == "instruction"
+    assert extras[f"{module.PLUGIN_NAME}:analysis"]["intent"] == (
+        "framework-command:status"
+    )

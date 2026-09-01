@@ -11,22 +11,12 @@
     "hint": "必须填写完整 UMO，例如 default:FriendMessage:123456。空列表表示不处理任何消息。",
     "default": []
   },
-  "end_phrases": {
-    "type": "list",
-    "description": "题目结束短语",
-    "default": ["我问完了", "问完了", "这道题问完了", "整理入库", "整理归档"]
-  },
-  "command_prefixes": {
-    "type": "list",
-    "description": "指令前缀",
-    "hint": "以这些字符开头的消息会保存，但不会进入题目正文。",
-    "default": ["/", "!"]
-  },
-  "control_phrases": {
-    "type": "list",
-    "description": "自然语言控制短语",
-    "hint": "命中这些开头的消息视为查询/修改等控制操作，不进入题目正文。",
-    "default": ["查询历史", "查看题目", "删除题目", "恢复题目", "重新总结", "修改题目"]
+  "classification_provider_id": {
+    "type": "string",
+    "description": "逐消息分类 Provider",
+    "hint": "每条白名单私聊的自然语言消息都会调用一次该模型，判断为问题、归档边界或其他软指令。留空时使用该 UMO 当前聊天 Provider。",
+    "default": "",
+    "_special": "select_provider"
   },
   "subjects": {
     "type": "list",
@@ -36,7 +26,7 @@
   "enable_ai_archive": {
     "type": "bool",
     "description": "归档时使用 LLM 生成标题、科目和摘要",
-    "hint": "只在结束边界出现时调用一次，不会对每条普通消息调用模型。关闭后使用本地规则。",
+    "hint": "这是结束边界后的整理调用，与每条消息都执行的意图分类调用相互独立。关闭后归档整理使用本地规则。",
     "default": true
   },
   "archive_provider_id": {

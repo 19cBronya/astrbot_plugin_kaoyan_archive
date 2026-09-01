@@ -73,7 +73,8 @@ function renderConfig() {
   const config = state.config || {};
   $("whitelist").value = (config.umo_whitelist || []).join("\n");
   $("whitelist-count").textContent = (config.umo_whitelist || []).length;
-  $("end-phrases").textContent = (config.end_phrases || []).join("、") || "—";
+  $("classifier-mode").textContent = config.classifier_mode || "—";
+  $("framework-commands").textContent = (config.framework_commands || []).join("、") || "—";
   $("subjects").textContent = (config.subjects || []).join("、") || "—";
   const select = $("filter-subject");
   const selected = select.value;

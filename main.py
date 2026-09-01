@@ -15,7 +15,7 @@ from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.message.components import Plain
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
-from .kaoyan_archive.analyzer import AnalysisResult, MessageAnalyzer, MessageKind
+from .kaoyan_archive.analyzer import AnalysisResult, MessageClassifier, MessageKind
 from .kaoyan_archive.archive_service import ArchiveResult, ArchiveService
 from .kaoyan_archive.attachments import AttachmentStore
 from .kaoyan_archive.storage import ArchiveStore
@@ -23,7 +23,14 @@ from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.1.1"
+PLUGIN_VERSION = "0.2.0"
+FRAMEWORK_COMMANDS = frozenset({"status", "archive", "retry", "latest"})
+FRAMEWORK_COMMAND_HELP = (
+    "/kaoyan status",
+    "/kaoyan archive",
+    "/kaoyan retry [题号]",
+    "/kaoyan latest",
+)
 
 
 @register(
@@ -42,7 +49,7 @@ class KaoyanArchivePlugin(Star):
             self.data_dir / "attachments",
             max_file_bytes=self._cfg_int("max_attachment_mb", 20) * 1024 * 1024,
         )
-        self.analyzer = MessageAnalyzer()
+        self.classifier = MessageClassifier(context=context, config=config)
         self.archive_service = ArchiveService(
             context=context,
             config=config,
@@ -80,18 +87,26 @@ class KaoyanArchivePlugin(Star):
         if not self._should_process(event):
             return
 
-        analysis = self.analyzer.analyze(
-            event.message_str or "",
-            end_phrases=self._cfg_list("end_phrases"),
-            command_prefixes=self._cfg_list("command_prefixes"),
-            control_phrases=self._cfg_list("control_phrases"),
-            has_attachment=bool(event.get_messages()),
-        )
+        framework_command = self._framework_command_name(event.message_str or "")
+        if framework_command:
+            analysis = self._framework_command_analysis(framework_command)
+        else:
+            analysis = await self.classifier.classify(
+                umo=event.unified_msg_origin,
+                text=event.message_str or "",
+                has_attachment=bool(event.get_messages()),
+            )
+            if analysis.warning:
+                logger.warning(
+                    "消息分类警告 umo=%s: %s",
+                    event.unified_msg_origin,
+                    analysis.warning,
+                )
         event_id = await self._persist_user_event(event, analysis)
         event.set_extra(f"{PLUGIN_NAME}:event_id", event_id)
         event.set_extra(f"{PLUGIN_NAME}:analysis", analysis.as_dict())
 
-        if analysis.kind is MessageKind.BOUNDARY:
+        if analysis.kind is MessageKind.ARCHIVE:
             question = await self.store.create_question_interval(
                 umo=event.unified_msg_origin,
                 boundary_event_id=event_id,
@@ -109,7 +124,7 @@ class KaoyanArchivePlugin(Star):
         analysis_data = event.get_extra(f"{PLUGIN_NAME}:analysis", {}) or {}
         excluded = bool(
             analysis_data.get("kind")
-            in {MessageKind.COMMAND.value, MessageKind.BOUNDARY.value}
+            in {MessageKind.INSTRUCTION.value, MessageKind.ARCHIVE.value}
         )
         completion = getattr(resp, "completion_text", "") or ""
         provider_id = await self._safe_current_provider(event.unified_msg_origin)
@@ -126,9 +141,11 @@ class KaoyanArchivePlugin(Star):
             body_text="" if excluded else completion,
             components=[],
             raw={"response_id": getattr(resp, "id", None)},
-            is_command=excluded and analysis_data.get("kind") == MessageKind.COMMAND.value,
-            is_boundary=excluded and analysis_data.get("kind") == MessageKind.BOUNDARY.value,
-            boundary_rule=analysis_data.get("matched_rule", ""),
+            is_command=excluded
+            and analysis_data.get("kind") == MessageKind.INSTRUCTION.value,
+            is_boundary=excluded
+            and analysis_data.get("kind") == MessageKind.ARCHIVE.value,
+            boundary_rule=analysis_data.get("intent", ""),
             created_at=utc_timestamp(),
             provider_id=provider_id,
             model_id=model_id,
@@ -144,6 +161,7 @@ class KaoyanArchivePlugin(Star):
     async def command_status(self, event: AstrMessageEvent):
         if not self._should_process(event):
             return
+        await self._ensure_framework_command_event(event, "status")
         stats = await self.store.stats(umo=event.unified_msg_origin)
         yield event.plain_result(
             "考研归档状态："
@@ -155,14 +173,7 @@ class KaoyanArchivePlugin(Star):
     async def command_archive(self, event: AstrMessageEvent):
         if not self._should_process(event):
             return
-        event_id = event.get_extra(f"{PLUGIN_NAME}:event_id")
-        if not event_id:
-            analysis = AnalysisResult(
-                kind=MessageKind.COMMAND,
-                body_text="",
-                matched_rule="/kaoyan archive",
-            )
-            event_id = await self._persist_user_event(event, analysis)
+        event_id = await self._ensure_framework_command_event(event, "archive")
         boundary_event_id = await self.store.mark_boundary(
             int(event_id), "/kaoyan archive"
         )
@@ -180,6 +191,7 @@ class KaoyanArchivePlugin(Star):
     async def command_retry(self, event: AstrMessageEvent, public_id: str = ""):
         if not self._should_process(event):
             return
+        await self._ensure_framework_command_event(event, "retry")
         question = await self.store.retry_question(
             umo=event.unified_msg_origin,
             public_id=public_id or None,
@@ -194,6 +206,7 @@ class KaoyanArchivePlugin(Star):
     async def command_latest(self, event: AstrMessageEvent):
         if not self._should_process(event):
             return
+        await self._ensure_framework_command_event(event, "latest")
         question = await self.store.latest_question(event.unified_msg_origin)
         if not question:
             yield event.plain_result("尚无已归档题目。")
@@ -224,14 +237,17 @@ class KaoyanArchivePlugin(Star):
             text=event.message_str or "",
             body_text=analysis.body_text,
             components=components,
-            raw=json_safe(getattr(message_obj, "raw_message", None)),
-            is_command=analysis.kind is MessageKind.COMMAND,
-            is_boundary=analysis.kind is MessageKind.BOUNDARY,
+            raw={
+                "adapter_event": json_safe(getattr(message_obj, "raw_message", None)),
+                "classification": analysis.as_dict(),
+            },
+            is_command=analysis.kind is MessageKind.INSTRUCTION,
+            is_boundary=analysis.kind is MessageKind.ARCHIVE,
             boundary_rule=analysis.matched_rule,
             created_at=float(getattr(message_obj, "timestamp", 0) or utc_timestamp()),
-            provider_id="",
-            model_id="",
-            prompt_version="",
+            provider_id=analysis.provider_id,
+            model_id=analysis.model_id,
+            prompt_version=analysis.prompt_version,
         )
         await self._capture_attachments(event, event_id)
         return event_id
@@ -257,6 +273,20 @@ class KaoyanArchivePlugin(Star):
                 await self.store.link_attachment(event_id, captured)
             except Exception as exc:
                 logger.warning("附件归档失败 event_id=%s: %s", event_id, exc)
+
+    async def _ensure_framework_command_event(
+        self,
+        event: AstrMessageEvent,
+        command_name: str,
+    ) -> int:
+        event_id = event.get_extra(f"{PLUGIN_NAME}:event_id")
+        if event_id:
+            return int(event_id)
+        analysis = self._framework_command_analysis(command_name)
+        event_id = await self._persist_user_event(event, analysis)
+        event.set_extra(f"{PLUGIN_NAME}:event_id", event_id)
+        event.set_extra(f"{PLUGIN_NAME}:analysis", analysis.as_dict())
+        return event_id
 
     async def _recover_pending_jobs(self) -> None:
         for question_uuid in await self.store.recover_pending_jobs():
@@ -320,7 +350,11 @@ class KaoyanArchivePlugin(Star):
                     "enabled": self._cfg_bool("enabled", True),
                     "umo_whitelist": self._umo_whitelist(),
                     "subjects": self._cfg_list("subjects"),
-                    "end_phrases": self._cfg_list("end_phrases"),
+                    "classifier_mode": "每条自然语言消息由 LLM 判断：问题 / 归档 / 其他指令",
+                    "classification_provider_id": str(
+                        self.config.get("classification_provider_id", "") or ""
+                    ),
+                    "framework_commands": list(FRAMEWORK_COMMAND_HELP),
                 }
             )
         payload = await request.json(default={})
@@ -383,6 +417,27 @@ class KaoyanArchivePlugin(Star):
             self._cfg_bool("enabled", True)
             and event.is_private_chat()
             and event.unified_msg_origin in self._umo_whitelist()
+        )
+
+    @staticmethod
+    def _framework_command_name(text: str) -> str:
+        parts = text.strip().lower().split()
+        if (
+            len(parts) >= 2
+            and parts[0] in {"kaoyan", "/kaoyan"}
+            and parts[1] in FRAMEWORK_COMMANDS
+        ):
+            return parts[1]
+        return ""
+
+    @staticmethod
+    def _framework_command_analysis(command_name: str) -> AnalysisResult:
+        return AnalysisResult(
+            kind=MessageKind.INSTRUCTION,
+            body_text="",
+            intent=f"framework-command:{command_name}",
+            confidence=1.0,
+            prompt_version="astrbot-command:v1",
         )
 
     def _umo_whitelist(self) -> list[str]:
