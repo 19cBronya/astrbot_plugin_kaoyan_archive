@@ -14,11 +14,12 @@ from .provider_fallback import (
 from .storage import ArchiveStore
 
 
-ARCHIVE_PROMPT_VERSION = "archive-v1"
+ARCHIVE_PROMPT_VERSION = "archive-v2"
 ARCHIVE_SYSTEM_PROMPT = """你是考研答疑归档器，只整理给定对话，不继续答题。
-返回严格 JSON 对象，字段为 subject、title、summary：
+返回严格 JSON 对象，字段为 subject、title、knowledge_points、summary：
 - subject 必须从允许科目中选择；
 - title 用一句简洁中文概括题目；
+- knowledge_points 是 1 至 8 个简洁的中文知识点字符串组成的数组；
 - summary 使用 Markdown，依次整理题目、关键追问、解答结论和仍未解决点；
 - 不得编造对话中没有的信息，不输出 JSON 之外的解释。"""
 
@@ -65,7 +66,7 @@ class ArchiveService:
         model_id = "local-rules"
         archive = self._local_archive(transcript, subjects)
         if self._cfg_bool("enable_ai_archive", True):
-            async def archive_with(candidate_id: str) -> tuple[dict[str, str], str]:
+            async def archive_with(candidate_id: str) -> tuple[dict[str, Any], str]:
                 response = await self.context.llm_generate(
                     chat_provider_id=candidate_id,
                     system_prompt=ARCHIVE_SYSTEM_PROMPT,
@@ -105,6 +106,7 @@ class ArchiveService:
             subject=archive["subject"],
             title=archive["title"],
             summary=archive["summary"],
+            knowledge_points=archive["knowledge_points"],
             provider_id=provider_id or "local",
             model_id=model_id,
             prompt_version=f"{ARCHIVE_PROMPT_VERSION}:{prompt_hash}",
@@ -158,19 +160,26 @@ class ArchiveService:
         value: dict[str, Any],
         subjects: list[str],
         transcript: str,
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         local = self._local_archive(transcript, subjects)
         subject = str(value.get("subject") or "").strip()
         title = str(value.get("title") or "").strip()
         summary = str(value.get("summary") or "").strip()
+        raw_points = value.get("knowledge_points")
+        knowledge_points = (
+            [str(item).strip()[:100] for item in raw_points if str(item).strip()][:8]
+            if isinstance(raw_points, list)
+            else []
+        )
         return {
             "subject": subject if subject in subjects else local["subject"],
             "title": title[:200] or local["title"],
             "summary": summary or local["summary"],
+            "knowledge_points": knowledge_points or local["knowledge_points"],
         }
 
     @staticmethod
-    def _local_archive(transcript: str, subjects: list[str]) -> dict[str, str]:
+    def _local_archive(transcript: str, subjects: list[str]) -> dict[str, Any]:
         lowered = transcript.lower()
         keyword_map = [
             ("操作系统", ("进程", "线程", "死锁", "分页", "虚拟内存", "操作系统")),
@@ -183,9 +192,15 @@ class ArchiveService:
             ("408综合", ("408",)),
         ]
         subject = "其他" if "其他" in subjects else subjects[-1]
+        knowledge_points: list[str] = []
         for candidate, keywords in keyword_map:
             if candidate in subjects and any(keyword in lowered for keyword in keywords):
                 subject = candidate
+                knowledge_points = [
+                    keyword.upper() if keyword in {"cpu", "cache", "tcp", "udp"} else keyword
+                    for keyword in keywords
+                    if keyword in lowered and keyword not in {candidate.lower(), "408"}
+                ][:8]
                 break
         first_user = next(
             (
@@ -197,7 +212,12 @@ class ArchiveService:
         )
         title = re.sub(r"\s+", " ", first_user)[:60]
         summary = "## 对话归档\n\n" + (transcript or "（仅包含附件，暂无文本）")
-        return {"subject": subject, "title": title, "summary": summary}
+        return {
+            "subject": subject,
+            "title": title,
+            "summary": summary,
+            "knowledge_points": knowledge_points or [subject],
+        }
 
     @staticmethod
     def _extract_model_id(response: Any, provider_id: str) -> str:

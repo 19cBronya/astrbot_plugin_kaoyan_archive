@@ -199,3 +199,64 @@ def test_raw_events_are_append_only(tmp_path: Path) -> None:
             assert "append-only" in str(exc)
         else:
             raise AssertionError("event update unexpectedly succeeded")
+
+
+def test_schema_migrates_existing_questions_for_knowledge_points(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    with sqlite3.connect(store.db_path) as db:
+        db.execute("ALTER TABLE questions DROP COLUMN knowledge_points_json")
+        db.execute("DELETE FROM schema_migrations WHERE version=2")
+
+    asyncio.run(store.initialize())
+
+    with sqlite3.connect(store.db_path) as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(questions)")}
+        versions = {row[0] for row in db.execute("SELECT version FROM schema_migrations")}
+    assert "knowledge_points_json" in columns
+    assert 2 in versions
+
+
+def test_question_list_filters_and_searches_knowledge_points(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    umo = "default:FriendMessage:filters"
+    add_event(store, umo=umo, direction="user", text="页表如何完成地址转换？")
+    boundary_id = add_event(
+        store,
+        umo=umo,
+        direction="user",
+        text="我问完了",
+        body_text="",
+        boundary=True,
+    )
+    question = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=boundary_id)
+    )
+    assert question
+    asyncio.run(store.claim_job(question["uuid"]))
+    asyncio.run(
+        store.complete_question(
+            question_uuid=question["uuid"],
+            subject="操作系统",
+            title="虚拟内存地址转换",
+            summary="地址转换过程总结",
+            knowledge_points=["页表", "TLB"],
+            provider_id="local",
+            model_id="local",
+            prompt_version="test",
+        )
+    )
+
+    rows = asyncio.run(
+        store.list_questions(
+            umo=umo,
+            subject="操作系统",
+            status="ARCHIVED",
+            search="TLB",
+            include_deleted=False,
+            limit=20,
+            offset=0,
+        )
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["knowledge_points"] == ["页表", "TLB"]

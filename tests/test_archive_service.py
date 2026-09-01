@@ -32,6 +32,7 @@ class FallbackLLMContext:
                 {
                     "subject": "操作系统",
                     "title": "备用模型整理成功",
+                    "knowledge_points": ["进程状态", "线程调度"],
                     "summary": "## 备用整理结果",
                 },
                 ensure_ascii=False,
@@ -157,6 +158,7 @@ def test_archive_uses_backup_before_umo_provider(tmp_path: Path) -> None:
     assert result.title == "备用模型整理成功"
     assert detail["provider_id"] == "backup-provider"
     assert detail["model_id"] == "backup-model"
+    assert detail["knowledge_points"] == ["进程状态", "线程调度"]
     assert "模型已降级" in result.warning
     assert [call["chat_provider_id"] for call in context.calls] == [
         "primary-archive",
@@ -194,6 +196,7 @@ def test_archive_uses_local_rules_when_all_providers_fail(tmp_path: Path) -> Non
     assert detail["status"] == "ARCHIVED"
     assert detail["provider_id"] == "local"
     assert detail["model_id"] == "local-rules"
+    assert {"进程", "线程"}.issubset(detail["knowledge_points"])
     assert "所有整理模型均失败" in result.warning
     assert [call["chat_provider_id"] for call in context.calls] == [
         "primary-archive",

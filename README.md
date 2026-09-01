@@ -13,7 +13,7 @@ AstrBot 私聊考研答疑归档插件。它不会接管或修改 AstrBot 的正
 - 从上一归档边界之后取到本次边界，排除框架命令和 LLM 判定的软指令。
 - 归档时调用一次可配置的 AstrBot Provider，生成科目、标题和 Markdown 摘要；模型不可用时自动使用本地规则，不影响编号入库。
 - 按科目事务化分配连续 ID，例如 `操作系统0001`。
-- 提供 AstrBot Plugin Page：总览、UMO 白名单、题目筛选、完整时间线、软删除、恢复和失败重试。
+- 提供 AstrBot Plugin Page：全量题目列表、科目/状态/会话下拉筛选、知识点与总结、完整原始会话、软删除、恢复和失败重试。
 
 ## 安装与配置
 
@@ -25,7 +25,7 @@ AstrBot 私聊考研答疑归档插件。它不会接管或修改 AstrBot 的正
 AstrBot/data/plugins/astrbot_plugin_kaoyan_archive/
 ```
 
-重载插件后，先在插件配置或 Plugin Page 中填写 `umo_whitelist`。完整 UMO 可通过 AstrBot 内置 `/sid` 查看，例如：
+重载插件后，先在 AstrBot 标准插件配置中填写 `umo_whitelist`。完整 UMO 可通过 AstrBot 内置 `/sid` 查看，例如：
 
 ```text
 default:FriendMessage:123456789
@@ -33,7 +33,7 @@ default:FriendMessage:123456789
 
 白名单为空时，插件不会记录、分析或调用任何模型。
 
-如果该 UMO 被路由到独立 AstrBot 配置（日志前缀会显示配置名称），还必须确认该配置的“插件集合 / `plugin_set`”为“全部插件”，或显式包含 `astrbot_plugin_kaoyan_archive`。AstrBot 会先按这里过滤处理器，再把消息交给插件；仅填写插件自己的 UMO 白名单不能绕过框架级过滤。Plugin Page 会逐条检查白名单 UMO，并显示“路由已启用插件”或明确的排除警告。
+如果该 UMO 被路由到独立 AstrBot 配置（日志前缀会显示配置名称），还必须确认该配置的“插件集合 / `plugin_set`”为“全部插件”，或显式包含 `astrbot_plugin_kaoyan_archive`。AstrBot 会先按这里过滤处理器，再把消息交给插件；仅填写插件自己的 UMO 白名单不能绕过框架级过滤。
 
 主要配置：
 

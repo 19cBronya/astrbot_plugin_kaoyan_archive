@@ -11,7 +11,7 @@ from .attachments import CapturedAttachment
 from .utils import canonical_json, utc_timestamp
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class ArchiveStore:
@@ -109,6 +109,7 @@ class ArchiveStore:
                     subject TEXT NOT NULL DEFAULT '',
                     title TEXT NOT NULL DEFAULT '',
                     summary TEXT NOT NULL DEFAULT '',
+                    knowledge_points_json TEXT NOT NULL DEFAULT '[]',
                     status TEXT NOT NULL,
                     start_event_id INTEGER,
                     boundary_event_id INTEGER NOT NULL UNIQUE REFERENCES events(id),
@@ -172,6 +173,15 @@ class ArchiveStore:
                 END;
                 """
             )
+            question_columns = {
+                str(row["name"])
+                for row in db.execute("PRAGMA table_info(questions)").fetchall()
+            }
+            if "knowledge_points_json" not in question_columns:
+                db.execute(
+                    "ALTER TABLE questions ADD COLUMN knowledge_points_json "
+                    "TEXT NOT NULL DEFAULT '[]'"
+                )
             db.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
                 (SCHEMA_VERSION, utc_timestamp()),
@@ -491,6 +501,7 @@ class ArchiveStore:
         subject: str,
         title: str,
         summary: str,
+        knowledge_points: list[str] | None = None,
         provider_id: str,
         model_id: str,
         prompt_version: str,
@@ -501,6 +512,7 @@ class ArchiveStore:
             subject,
             title,
             summary,
+            knowledge_points or [],
             provider_id,
             model_id,
             prompt_version,
@@ -513,6 +525,7 @@ class ArchiveStore:
         subject: str,
         title: str,
         summary: str,
+        knowledge_points: list[str],
         provider_id: str,
         model_id: str,
         prompt_version: str,
@@ -549,7 +562,8 @@ class ArchiveStore:
             db.execute(
                 """
                 UPDATE questions
-                SET public_id=?, subject=?, title=?, summary=?, status='ARCHIVED',
+                SET public_id=?, subject=?, title=?, summary=?,
+                    knowledge_points_json=?, status='ARCHIVED',
                     provider_id=?, model_id=?, prompt_version=?, analysis_warning=?,
                     error='', archived_at=?
                 WHERE uuid=?
@@ -559,6 +573,9 @@ class ArchiveStore:
                     subject,
                     title.strip()[:200],
                     summary.strip(),
+                    canonical_json(
+                        [str(item).strip()[:100] for item in knowledge_points if str(item).strip()][:20]
+                    ),
                     provider_id,
                     model_id,
                     prompt_version,
@@ -709,6 +726,13 @@ class ArchiveStore:
             umo_count = db.execute(
                 "SELECT COUNT(DISTINCT umo) AS c FROM events"
             ).fetchone()["c"]
+            umo_rows = db.execute(
+                """
+                SELECT DISTINCT umo FROM questions
+                WHERE status <> 'EMPTY'
+                ORDER BY umo
+                """
+            ).fetchall()
             subject_rows = db.execute(
                 """
                 SELECT subject, COUNT(*) AS count FROM questions
@@ -722,6 +746,7 @@ class ArchiveStore:
                 "finalizing": int(finalizing),
                 "failed": int(failed),
                 "umos": int(umo_count),
+                "umo_values": [str(row["umo"]) for row in umo_rows],
                 "subjects": [dict(row) for row in subject_rows],
             }
 
@@ -734,10 +759,12 @@ class ArchiveStore:
         include_deleted: bool,
         limit: int,
         offset: int,
+        status: str = "",
     ) -> list[dict[str, Any]]:
         return self._list_questions_sync(
             umo,
             subject,
+            status,
             search,
             include_deleted,
             limit,
@@ -748,6 +775,7 @@ class ArchiveStore:
         self,
         umo: str,
         subject: str,
+        status: str,
         search: str,
         include_deleted: bool,
         limit: int,
@@ -761,10 +789,16 @@ class ArchiveStore:
         if subject:
             clauses.append("subject=?")
             params.append(subject)
+        if status:
+            clauses.append("status=?")
+            params.append(status)
         if search:
-            clauses.append("(public_id LIKE ? OR title LIKE ? OR summary LIKE ?)")
+            clauses.append(
+                "(public_id LIKE ? OR title LIKE ? OR summary LIKE ? "
+                "OR knowledge_points_json LIKE ?)"
+            )
             pattern = f"%{search[:100]}%"
-            params.extend([pattern, pattern, pattern])
+            params.extend([pattern, pattern, pattern, pattern])
         if not include_deleted:
             clauses.append("deleted_at IS NULL")
         params.extend([limit, offset])
@@ -772,13 +806,14 @@ class ArchiveStore:
             rows = db.execute(
                 f"""
                 SELECT uuid,umo,public_id,subject,title,status,event_count,
+                       knowledge_points_json,
                        analysis_warning,error,created_at,archived_at,deleted_at
                 FROM questions WHERE {' AND '.join(clauses)}
                 ORDER BY boundary_event_id DESC LIMIT ? OFFSET ?
                 """,
                 params,
             ).fetchall()
-            return [dict(row) for row in rows]
+            return [self._question_dict(row) for row in rows]
 
     async def question_detail(self, question_uuid: str) -> dict[str, Any] | None:
         return self._question_detail_sync(question_uuid)
@@ -813,7 +848,7 @@ class ArchiveStore:
                 """,
                 (question_uuid,),
             ).fetchall()
-            result = dict(question)
+            result = self._question_dict(question)
             result["events"] = [self._event_dict(row) for row in events]
             return result
 
@@ -835,6 +870,21 @@ class ArchiveStore:
                     {},
                 )
             return cursor.rowcount == 1
+
+    @staticmethod
+    def _question_dict(row: sqlite3.Row) -> dict[str, Any]:
+        result = dict(row)
+        raw = result.pop("knowledge_points_json", "[]")
+        try:
+            points = json.loads(raw or "[]")
+        except (TypeError, json.JSONDecodeError):
+            points = []
+        result["knowledge_points"] = (
+            [str(item) for item in points if str(item).strip()]
+            if isinstance(points, list)
+            else []
+        )
+        return result
 
     @staticmethod
     def _safe_subject(subject: str) -> str:

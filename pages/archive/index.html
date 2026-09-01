@@ -22,78 +22,54 @@
 
       <section id="stats" class="stats" aria-label="归档总览"></section>
 
-      <div class="layout">
-        <aside class="sidebar">
-          <section class="panel config-panel">
-            <div class="panel-heading">
-              <div>
-                <p class="section-kicker">PROCESSING SCOPE</p>
-                <h2>UMO 白名单</h2>
-              </div>
-              <span id="whitelist-count" class="counter">0</span>
-            </div>
-            <p class="help">一行一个完整私聊 UMO。列表为空时，插件不会处理任何消息。</p>
-            <textarea
-              id="whitelist"
-              rows="8"
-              spellcheck="false"
-              placeholder="default:FriendMessage:123456"
-            ></textarea>
-            <div class="config-actions">
-              <button id="save-config" class="button primary" type="button">保存白名单</button>
-              <span id="save-state" class="inline-state"></span>
-            </div>
-            <div id="routing-status" class="routing-status" aria-live="polite"></div>
-            <div class="divider"></div>
-            <dl class="config-summary">
-              <div><dt>自然语言判定</dt><dd id="classifier-mode">—</dd></div>
-              <div><dt>框架注册指令</dt><dd id="framework-commands">—</dd></div>
-              <div><dt>归档科目</dt><dd id="subjects">—</dd></div>
-            </dl>
-          </section>
-        </aside>
+      <section class="panel archive-panel">
+        <div class="panel-heading list-heading">
+          <div>
+            <p class="section-kicker">QUESTION LIBRARY</p>
+            <h2>全部题目</h2>
+            <p class="section-description">选择筛选条件缩小范围，点击题目查看知识点、总结和原始会话。</p>
+          </div>
+          <span id="result-count" class="result-count"></span>
+        </div>
 
-        <section class="content">
-          <section class="panel">
-            <div class="panel-heading list-heading">
-              <div>
-                <p class="section-kicker">ARCHIVED QUESTIONS</p>
-                <h2>题目档案</h2>
-              </div>
-              <span id="result-count" class="muted-text"></span>
-            </div>
+        <form id="filters" class="filters">
+          <label class="search-field">
+            <span>搜索</span>
+            <input id="search" type="search" placeholder="题号、标题、知识点或总结" />
+          </label>
+          <label>
+            <span>科目</span>
+            <select id="filter-subject"><option value="">全部科目</option></select>
+          </label>
+          <label>
+            <span>状态</span>
+            <select id="filter-status">
+              <option value="">全部状态</option>
+              <option value="ARCHIVED">已归档</option>
+              <option value="FINALIZING">整理中</option>
+              <option value="FINALIZE_FAILED">整理失败</option>
+            </select>
+          </label>
+          <label>
+            <span>会话</span>
+            <select id="filter-umo"><option value="">全部会话</option></select>
+          </label>
+          <label class="check-label">
+            <input id="include-deleted" type="checkbox" />
+            <span>含已删除</span>
+          </label>
+          <button class="button secondary" type="submit">筛选</button>
+        </form>
 
-            <form id="filters" class="filters">
-              <label>
-                <span>关键词</span>
-                <input id="search" type="search" placeholder="题号、标题或摘要" />
-              </label>
-              <label>
-                <span>UMO</span>
-                <input id="filter-umo" type="text" placeholder="全部 UMO" />
-              </label>
-              <label>
-                <span>科目</span>
-                <select id="filter-subject"><option value="">全部科目</option></select>
-              </label>
-              <label class="check-label">
-                <input id="include-deleted" type="checkbox" />
-                <span>显示已删除</span>
-              </label>
-              <button class="button secondary" type="submit">查询</button>
-            </form>
-
-            <div id="question-list" class="question-list" aria-live="polite"></div>
-            <div id="empty-list" class="empty hidden">
-              <div class="empty-icon">∅</div>
-              <p>还没有符合条件的归档题目。</p>
-            </div>
-          </section>
-        </section>
-      </div>
+        <div id="question-list" class="question-list" aria-live="polite"></div>
+        <div id="empty-list" class="empty hidden">
+          <div class="empty-icon">∅</div>
+          <p>还没有符合条件的题目。</p>
+        </div>
+      </section>
     </main>
 
-    <div id="detail-overlay" class="overlay hidden" role="dialog" aria-modal="true">
+    <div id="detail-overlay" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="detail-title">
       <article class="detail-drawer">
         <header class="detail-header">
           <div>
@@ -104,12 +80,21 @@
         </header>
         <div id="detail-meta" class="detail-meta"></div>
         <section class="detail-section">
-          <h3>归档摘要</h3>
-          <pre id="detail-summary" class="summary"></pre>
+          <p class="section-kicker">KNOWLEDGE POINTS</p>
+          <h3>知识点</h3>
+          <div id="detail-knowledge" class="knowledge-list"></div>
+        </section>
+        <section class="detail-section">
+          <p class="section-kicker">ARCHIVE SUMMARY</p>
+          <h3>题目总结</h3>
+          <div id="detail-summary" class="summary"></div>
         </section>
         <section class="detail-section">
           <div class="timeline-heading">
-            <h3>完整题目时间线</h3>
+            <div>
+              <p class="section-kicker">RAW CONVERSATION</p>
+              <h3>原始会话</h3>
+            </div>
             <span id="detail-event-count" class="counter"></span>
           </div>
           <div id="detail-timeline" class="timeline"></div>

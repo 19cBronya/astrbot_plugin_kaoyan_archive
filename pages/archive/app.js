@@ -10,10 +10,6 @@ const state = {
 const $ = (id) => document.getElementById(id);
 const connection = $("connection");
 
-function text(value) {
-  return value == null ? "" : String(value);
-}
-
 function dateTime(value) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("zh-CN", {
@@ -51,7 +47,7 @@ function renderStats() {
   const items = [
     ["归档题目", stats.questions ?? 0],
     ["原始事件", stats.events ?? 0],
-    ["白名单会话", state.config?.umo_whitelist?.length ?? 0],
+    ["归档科目", stats.subjects?.length ?? 0],
     ["正在整理", stats.finalizing ?? 0],
     ["整理失败", stats.failed ?? 0],
   ];
@@ -71,37 +67,21 @@ function renderStats() {
 
 function renderConfig() {
   const config = state.config || {};
-  $("whitelist").value = (config.umo_whitelist || []).join("\n");
-  $("whitelist-count").textContent = (config.umo_whitelist || []).length;
-  $("classifier-mode").textContent = config.classifier_mode || "—";
-  $("framework-commands").textContent = (config.framework_commands || []).join("、") || "—";
-  $("subjects").textContent = (config.subjects || []).join("、") || "—";
-  const select = $("filter-subject");
-  const selected = select.value;
-  select.replaceChildren(new Option("全部科目", ""));
-  for (const subject of config.subjects || []) {
-    select.add(new Option(subject, subject));
+  fillSelect($("filter-subject"), "全部科目", config.subjects || []);
+  const umos = new Set([...(state.stats?.umo_values || []), ...(config.umo_whitelist || [])]);
+  for (const question of state.questions) {
+    if (question.umo) umos.add(question.umo);
   }
-  select.value = selected;
-  renderRoutingStatus(config.routing_status || []);
+  fillSelect($("filter-umo"), "全部会话", [...umos]);
 }
 
-function renderRoutingStatus(statuses) {
-  const container = $("routing-status");
-  container.replaceChildren();
-  for (const status of statuses) {
-    const item = document.createElement("div");
-    item.className = `routing-item ${status.handler_enabled ? "ok" : "error"}`;
-    const title = document.createElement("strong");
-    title.textContent = status.handler_enabled ? "路由已启用插件" : "路由未启用插件";
-    const detail = document.createElement("span");
-    const profile = status.config_name || status.config_id || "当前配置";
-    detail.textContent = status.handler_enabled
-      ? `${profile} · ${status.umo}`
-      : status.warning || `${profile} 未包含本插件`;
-    item.append(title, detail);
-    container.append(item);
+function fillSelect(select, emptyLabel, values) {
+  const selected = select.value;
+  select.replaceChildren(new Option(emptyLabel, ""));
+  for (const value of values) {
+    select.add(new Option(value, value));
   }
+  select.value = selected;
 }
 
 function statusType(status) {
@@ -143,11 +123,20 @@ function renderQuestions() {
       meta.append(span);
     }
     main.append(id, title, meta);
+    const knowledge = document.createElement("div");
+    knowledge.className = "question-knowledge";
+    for (const point of (item.knowledge_points || []).slice(0, 5)) {
+      knowledge.append(knowledgeChip(point));
+    }
+    if (knowledge.childElementCount) main.append(knowledge);
 
     const status = document.createElement("div");
     status.className = "question-status";
     status.append(badge(item.deleted_at ? "已删除" : statusLabel(item.status), item.deleted_at ? "error" : statusType(item.status)));
-    card.append(main, status);
+    const arrow = document.createElement("span");
+    arrow.className = "question-arrow";
+    arrow.textContent = "›";
+    card.append(main, status, arrow);
     card.addEventListener("click", () => openDetail(item.uuid));
     card.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") openDetail(item.uuid);
@@ -160,7 +149,8 @@ function renderDetail(detail) {
   state.active = detail;
   $("detail-id").textContent = detail.public_id || detail.uuid;
   $("detail-title").textContent = detail.title || "未命名题目";
-  $("detail-summary").textContent = detail.summary || detail.error || "暂无摘要";
+  renderSummary(detail.summary || detail.error || "暂无总结");
+  renderKnowledge(detail);
   $("detail-event-count").textContent = `${detail.events?.length || 0} 条`;
 
   const meta = $("detail-meta");
@@ -176,11 +166,11 @@ function renderDetail(detail) {
   timeline.replaceChildren();
   for (const event of detail.events || []) {
     const item = document.createElement("article");
-    item.className = `event ${event.direction}${event.relation === "boundary" ? " boundary" : ""}`;
+    item.className = `event ${event.direction}${String(event.relation).includes("boundary") ? " boundary" : ""}`;
     const head = document.createElement("div");
     head.className = "event-head";
     const who = document.createElement("span");
-    who.textContent = `${event.direction === "user" ? "用户" : event.direction === "assistant" ? "助手" : "控制"} · ${event.relation}`;
+    who.textContent = `${event.direction === "user" ? "用户" : event.direction === "assistant" ? "助手" : "控制"} · ${relationLabel(event.relation)}`;
     const when = document.createElement("span");
     when.textContent = dateTime(event.created_at);
     head.append(who, when);
@@ -208,6 +198,90 @@ function renderDetail(detail) {
   } else {
     actions.append(actionButton("软删除", "danger", () => actOnQuestion("delete")));
   }
+}
+
+function knowledgeChip(label) {
+  const chip = document.createElement("span");
+  chip.className = "knowledge-chip";
+  chip.textContent = label;
+  return chip;
+}
+
+function renderKnowledge(detail) {
+  const container = $("detail-knowledge");
+  container.replaceChildren();
+  const points = [...(detail.knowledge_points || [])];
+  if (!points.length) {
+    for (const line of String(detail.summary || "").split(/\r?\n/)) {
+      const heading = line.match(/^#{1,4}\s+(.+)/)?.[1]?.trim();
+      if (heading && !/^(对话归档|题目|关键追问|解答结论|仍未解决)/.test(heading)) {
+        points.push(heading);
+      }
+    }
+  }
+  if (!points.length && detail.subject) points.push(detail.subject);
+  if (!points.length) {
+    const empty = document.createElement("span");
+    empty.className = "knowledge-empty";
+    empty.textContent = "该题暂未提取知识点，可重新整理生成。";
+    container.append(empty);
+    return;
+  }
+  for (const point of [...new Set(points)].slice(0, 12)) {
+    container.append(knowledgeChip(point));
+  }
+}
+
+function renderSummary(markdown) {
+  const container = $("detail-summary");
+  container.replaceChildren();
+  let list = null;
+  for (const rawLine of String(markdown).split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      list = null;
+      continue;
+    }
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      list = null;
+      const node = document.createElement(`h${heading[1].length}`);
+      node.textContent = heading[2];
+      container.append(node);
+      continue;
+    }
+    const bullet = line.match(/^[-*]\s+(.+)$/);
+    if (bullet) {
+      if (!list) {
+        list = document.createElement("ul");
+        container.append(list);
+      }
+      const item = document.createElement("li");
+      item.textContent = bullet[1];
+      list.append(item);
+      continue;
+    }
+    list = null;
+    const paragraph = document.createElement("p");
+    paragraph.textContent = line;
+    container.append(paragraph);
+  }
+}
+
+function relationLabel(relation) {
+  return String(relation || "")
+    .split(",")
+    .map((value) => ({
+      primary: "题目正文",
+      answer: "回答",
+      boundary: "结束边界",
+      excluded: "已排除",
+      supplement: "补充",
+      query: "查询",
+      edit: "修改",
+      reference: "引用",
+    })[value] || value)
+    .join(" / ");
 }
 
 function actionButton(label, kind, handler) {
@@ -240,14 +314,16 @@ async function loadOverview() {
 async function loadQuestions() {
   const params = {
     search: $("search").value.trim(),
-    umo: $("filter-umo").value.trim(),
+    umo: $("filter-umo").value,
     subject: $("filter-subject").value,
+    status: $("filter-status").value,
     include_deleted: $("include-deleted").checked ? "1" : "0",
     limit: 100,
   };
   try {
     const result = await apiGet("questions", params);
     state.questions = result.items || [];
+    renderConfig();
     renderQuestions();
   } catch (error) {
     toast(error.message || "题目查询失败", true);
@@ -259,6 +335,8 @@ async function openDetail(uuid) {
     const detail = await apiGet(`questions/${encodeURIComponent(uuid)}`);
     renderDetail(detail);
     $("detail-overlay").classList.remove("hidden");
+    document.body.classList.add("dialog-open");
+    $("close-detail").focus();
   } catch (error) {
     toast(error.message || "详情加载失败", true);
   }
@@ -270,48 +348,31 @@ async function actOnQuestion(action) {
   try {
     await apiPost(`questions/${encodeURIComponent(state.active.uuid)}/action`, { action });
     toast(action === "retry" ? "已提交重新整理" : "操作成功");
-    $("detail-overlay").classList.add("hidden");
+    closeDetail();
     await Promise.all([loadOverview(), loadQuestions()]);
   } catch (error) {
     toast(error.message || "操作失败", true);
   }
 }
 
-$("save-config").addEventListener("click", async () => {
-  const button = $("save-config");
-  const whitelist = $("whitelist").value
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  button.disabled = true;
-  $("save-state").textContent = "保存中…";
-  try {
-    const result = await apiPost("config", { umo_whitelist: whitelist });
-    state.config.umo_whitelist = result.umo_whitelist;
-    state.config.routing_status = result.routing_status || [];
-    renderConfig();
-    renderStats();
-    $("save-state").textContent = "已保存";
-    toast("UMO 白名单已更新");
-  } catch (error) {
-    $("save-state").textContent = "保存失败";
-    toast(error.message || "保存失败", true);
-  } finally {
-    button.disabled = false;
-  }
-});
-
 $("filters").addEventListener("submit", (event) => {
   event.preventDefault();
   loadQuestions();
 });
+$("filters").addEventListener("change", (event) => {
+  if (event.target.matches("select, input[type='checkbox']")) loadQuestions();
+});
 $("refresh").addEventListener("click", () => Promise.all([loadOverview(), loadQuestions()]));
-$("close-detail").addEventListener("click", () => $("detail-overlay").classList.add("hidden"));
+function closeDetail() {
+  $("detail-overlay").classList.add("hidden");
+  document.body.classList.remove("dialog-open");
+}
+$("close-detail").addEventListener("click", closeDetail);
 $("detail-overlay").addEventListener("click", (event) => {
-  if (event.target === $("detail-overlay")) $("detail-overlay").classList.add("hidden");
+  if (event.target === $("detail-overlay")) closeDetail();
 });
 window.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") $("detail-overlay").classList.add("hidden");
+  if (event.key === "Escape") closeDetail();
 });
 
 await bridge.ready();

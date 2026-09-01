@@ -23,7 +23,7 @@ from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.2.2"
+PLUGIN_VERSION = "0.3.0"
 FRAMEWORK_COMMANDS = frozenset({"status", "archive", "retry", "latest"})
 FRAMEWORK_COMMAND_HELP = (
     "/kaoyan status",
@@ -400,6 +400,7 @@ class KaoyanArchivePlugin(Star):
         questions = await self.store.list_questions(
             umo=request.query.get("umo", ""),
             subject=request.query.get("subject", ""),
+            status=request.query.get("status", ""),
             search=request.query.get("search", ""),
             include_deleted=request.query.get("include_deleted", "0") == "1",
             limit=limit,
