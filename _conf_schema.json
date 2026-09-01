@@ -1,0 +1,64 @@
+{
+  "enabled": {
+    "type": "bool",
+    "description": "启用归档插件",
+    "hint": "插件只旁路记录和归档，不拦截 AstrBot 的正常回复。",
+    "default": true
+  },
+  "umo_whitelist": {
+    "type": "list",
+    "description": "允许处理的私聊 UMO 白名单",
+    "hint": "必须填写完整 UMO，例如 default:FriendMessage:123456。空列表表示不处理任何消息。",
+    "default": []
+  },
+  "end_phrases": {
+    "type": "list",
+    "description": "题目结束短语",
+    "default": ["我问完了", "问完了", "这道题问完了", "整理入库", "整理归档"]
+  },
+  "command_prefixes": {
+    "type": "list",
+    "description": "指令前缀",
+    "hint": "以这些字符开头的消息会保存，但不会进入题目正文。",
+    "default": ["/", "!"]
+  },
+  "control_phrases": {
+    "type": "list",
+    "description": "自然语言控制短语",
+    "hint": "命中这些开头的消息视为查询/修改等控制操作，不进入题目正文。",
+    "default": ["查询历史", "查看题目", "删除题目", "恢复题目", "重新总结", "修改题目"]
+  },
+  "subjects": {
+    "type": "list",
+    "description": "归档科目目录",
+    "default": ["数学", "英语", "政治", "数据结构", "计组", "操作系统", "计网", "408综合", "其他"]
+  },
+  "enable_ai_archive": {
+    "type": "bool",
+    "description": "归档时使用 LLM 生成标题、科目和摘要",
+    "hint": "只在结束边界出现时调用一次，不会对每条普通消息调用模型。关闭后使用本地规则。",
+    "default": true
+  },
+  "archive_provider_id": {
+    "type": "string",
+    "description": "归档专用 Provider",
+    "hint": "留空时使用该 UMO 当前聊天 Provider。",
+    "default": "",
+    "_special": "select_provider"
+  },
+  "max_archive_chars": {
+    "type": "int",
+    "description": "单次送入归档模型的最大字符数",
+    "default": 30000
+  },
+  "max_attachment_mb": {
+    "type": "int",
+    "description": "单个附件归档上限（MiB）",
+    "default": 20
+  },
+  "send_archive_notice": {
+    "type": "bool",
+    "description": "归档完成后主动发送编号通知",
+    "default": true
+  }
+}
