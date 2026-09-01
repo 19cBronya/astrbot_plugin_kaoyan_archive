@@ -12,7 +12,7 @@ from kaoyan_archive.analyzer import (
 
 
 class FakeContext:
-    def __init__(self, responses: list[str]) -> None:
+    def __init__(self, responses: list[object]) -> None:
         self.responses = list(responses)
         self.calls: list[dict] = []
         self.provider_lookups = 0
@@ -23,8 +23,11 @@ class FakeContext:
 
     async def llm_generate(self, **kwargs):
         self.calls.append(kwargs)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
         return SimpleNamespace(
-            completion_text=self.responses.pop(0),
+            completion_text=response,
             raw_completion=SimpleNamespace(model="classifier-model"),
         )
 
@@ -137,3 +140,70 @@ def test_configured_classifier_provider_is_used() -> None:
     )
     assert context.calls[0]["chat_provider_id"] == "cheap-classifier"
     assert context.provider_lookups == 0
+
+
+def test_classifier_uses_backup_before_umo_provider() -> None:
+    context = FakeContext(
+        [
+            RuntimeError("primary unavailable"),
+            '{"kind":"question","content":"题目","intent":"new_question","confidence":1}',
+        ]
+    )
+    classifier = MessageClassifier(
+        context=context,
+        config={
+            "classification_provider_id": "primary-classifier",
+            "fallback_provider_id": "backup-provider",
+        },
+    )
+
+    result = asyncio.run(
+        classifier.classify(
+            umo="default:FriendMessage:10001",
+            text="题目",
+            has_attachment=False,
+        )
+    )
+
+    assert result.provider_id == "backup-provider"
+    assert [call["chat_provider_id"] for call in context.calls] == [
+        "primary-classifier",
+        "backup-provider",
+    ]
+    assert context.provider_lookups == 0
+    assert "模型已降级" in result.warning
+    assert "primary unavailable" in result.warning
+
+
+def test_classifier_falls_back_to_umo_after_two_failures() -> None:
+    context = FakeContext(
+        [
+            RuntimeError("primary unavailable"),
+            RuntimeError("backup unavailable"),
+            '{"kind":"archive","content":"","intent":"finish","confidence":1}',
+        ]
+    )
+    classifier = MessageClassifier(
+        context=context,
+        config={
+            "classification_provider_id": "primary-classifier",
+            "fallback_provider_id": "backup-provider",
+        },
+    )
+
+    result = asyncio.run(
+        classifier.classify(
+            umo="default:FriendMessage:10001",
+            text="我问完了",
+            has_attachment=False,
+        )
+    )
+
+    assert result.kind is MessageKind.ARCHIVE
+    assert result.provider_id == "classifier-provider"
+    assert [call["chat_provider_id"] for call in context.calls] == [
+        "primary-classifier",
+        "backup-provider",
+        "classifier-provider",
+    ]
+    assert context.provider_lookups == 1

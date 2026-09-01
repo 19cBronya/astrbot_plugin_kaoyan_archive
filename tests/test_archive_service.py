@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from kaoyan_archive.archive_service import ArchiveService
 from kaoyan_archive.storage import ArchiveStore
@@ -10,6 +12,44 @@ from kaoyan_archive.storage import ArchiveStore
 class NoLLMContext:
     async def get_current_chat_provider_id(self, umo: str) -> str:
         raise AssertionError("LLM should not be used when enable_ai_archive=false")
+
+
+class FallbackLLMContext:
+    def __init__(self) -> None:
+        self.calls = []
+        self.provider_lookups = 0
+
+    async def get_current_chat_provider_id(self, umo: str) -> str:
+        self.provider_lookups += 1
+        return "umo-provider"
+
+    async def llm_generate(self, **kwargs):
+        self.calls.append(kwargs)
+        if kwargs["chat_provider_id"] == "primary-archive":
+            raise RuntimeError("primary archive provider unavailable")
+        return SimpleNamespace(
+            completion_text=json.dumps(
+                {
+                    "subject": "操作系统",
+                    "title": "备用模型整理成功",
+                    "summary": "## 备用整理结果",
+                },
+                ensure_ascii=False,
+            ),
+            raw_completion=SimpleNamespace(model="backup-model"),
+        )
+
+
+class AllFailLLMContext:
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def get_current_chat_provider_id(self, umo: str) -> str:
+        return "umo-provider"
+
+    async def llm_generate(self, **kwargs):
+        self.calls.append(kwargs)
+        raise RuntimeError(f"{kwargs['chat_provider_id']} unavailable")
 
 
 async def build_question(store: ArchiveStore) -> str:
@@ -88,3 +128,75 @@ def test_local_archive_assigns_subject_and_id(tmp_path: Path) -> None:
     assert result.subject == "操作系统"
     assert "进程和线程" in result.title
     assert "资源分配单位" in result.summary
+
+
+def test_archive_uses_backup_before_umo_provider(tmp_path: Path) -> None:
+    async def scenario():
+        store = ArchiveStore(tmp_path / "archive.sqlite3")
+        await store.initialize()
+        question_uuid = await build_question(store)
+        context = FallbackLLMContext()
+        service = ArchiveService(
+            context=context,
+            config={
+                "enable_ai_archive": True,
+                "archive_provider_id": "primary-archive",
+                "fallback_provider_id": "backup-provider",
+                "subjects": ["操作系统", "其他"],
+                "max_archive_chars": 30000,
+            },
+            store=store,
+            plugin_version="test",
+        )
+        result = await service.finalize(question_uuid)
+        detail = await store.question_detail(question_uuid)
+        return result, detail, context
+
+    result, detail, context = asyncio.run(scenario())
+
+    assert result.title == "备用模型整理成功"
+    assert detail["provider_id"] == "backup-provider"
+    assert detail["model_id"] == "backup-model"
+    assert "模型已降级" in result.warning
+    assert [call["chat_provider_id"] for call in context.calls] == [
+        "primary-archive",
+        "backup-provider",
+    ]
+    assert context.provider_lookups == 0
+
+
+def test_archive_uses_local_rules_when_all_providers_fail(tmp_path: Path) -> None:
+    async def scenario():
+        store = ArchiveStore(tmp_path / "archive.sqlite3")
+        await store.initialize()
+        question_uuid = await build_question(store)
+        context = AllFailLLMContext()
+        service = ArchiveService(
+            context=context,
+            config={
+                "enable_ai_archive": True,
+                "archive_provider_id": "primary-archive",
+                "fallback_provider_id": "backup-provider",
+                "subjects": ["操作系统", "其他"],
+                "max_archive_chars": 30000,
+            },
+            store=store,
+            plugin_version="test",
+        )
+        result = await service.finalize(question_uuid)
+        detail = await store.question_detail(question_uuid)
+        return result, detail, context
+
+    result, detail, context = asyncio.run(scenario())
+
+    assert result.public_id == "操作系统0001"
+    assert "进程和线程" in result.title
+    assert detail["status"] == "ARCHIVED"
+    assert detail["provider_id"] == "local"
+    assert detail["model_id"] == "local-rules"
+    assert "所有整理模型均失败" in result.warning
+    assert [call["chat_provider_id"] for call in context.calls] == [
+        "primary-archive",
+        "backup-provider",
+        "umo-provider",
+    ]

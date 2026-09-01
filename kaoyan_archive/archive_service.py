@@ -6,6 +6,11 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from .provider_fallback import (
+    ProviderFallbackExhausted,
+    call_with_provider_fallback,
+    format_provider_failures,
+)
 from .storage import ArchiveStore
 
 
@@ -60,12 +65,9 @@ class ArchiveService:
         model_id = "local-rules"
         archive = self._local_archive(transcript, subjects)
         if self._cfg_bool("enable_ai_archive", True):
-            try:
-                provider_id = str(self.config.get("archive_provider_id", "") or "").strip()
-                if not provider_id:
-                    provider_id = await self.context.get_current_chat_provider_id(source["umo"])
+            async def archive_with(candidate_id: str) -> tuple[dict[str, str], str]:
                 response = await self.context.llm_generate(
-                    chat_provider_id=provider_id,
+                    chat_provider_id=candidate_id,
                     system_prompt=ARCHIVE_SYSTEM_PROMPT,
                     prompt=json.dumps(
                         {"subjects": subjects, "conversation": transcript},
@@ -73,10 +75,28 @@ class ArchiveService:
                     ),
                 )
                 parsed = self._parse_response(response.completion_text)
-                archive = self._validate_archive(parsed, subjects, transcript)
-                model_id = self._extract_model_id(response, provider_id)
-            except Exception as exc:
-                extra = f"AI 整理失败，已使用本地规则：{type(exc).__name__}"
+                return (
+                    self._validate_archive(parsed, subjects, transcript),
+                    self._extract_model_id(response, candidate_id),
+                )
+
+            try:
+                generated, provider_id, failures = await call_with_provider_fallback(
+                    context=self.context,
+                    config=self.config,
+                    primary_key="archive_provider_id",
+                    umo=source["umo"],
+                    operation=archive_with,
+                )
+                archive, model_id = generated
+                if failures:
+                    warning = self._merge_warning(
+                        warning,
+                        f"模型已降级：{format_provider_failures(failures)}",
+                    )
+            except ProviderFallbackExhausted as exc:
+                provider_id = "local"
+                extra = f"所有整理模型均失败，已使用本地规则：{str(exc)[:700]}"
                 warning = f"{warning}；{extra}".strip("；")
 
         prompt_hash = hashlib.sha256(ARCHIVE_SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:16]
@@ -207,3 +227,7 @@ class ArchiveService:
             return min(max(int(self.config.get(key, default)), minimum), maximum)
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _merge_warning(*parts: str) -> str:
+        return "；".join(part.strip("； ") for part in parts if part.strip("； "))

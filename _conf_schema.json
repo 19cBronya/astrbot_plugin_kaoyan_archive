@@ -18,6 +18,13 @@
     "default": "",
     "_special": "select_provider"
   },
+  "fallback_provider_id": {
+    "type": "string",
+    "description": "备用 LLM Provider",
+    "hint": "逐消息分类或归档专用 Provider 失败时先尝试此模型；留空或调用失败时再退回该 UMO 当前聊天 Provider。",
+    "default": "",
+    "_special": "select_provider"
+  },
   "subjects": {
     "type": "list",
     "description": "归档科目目录",

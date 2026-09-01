@@ -3,9 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
+
+from .provider_fallback import (
+    ProviderFallbackExhausted,
+    call_with_provider_fallback,
+    format_provider_failures,
+)
 
 
 CLASSIFIER_PROMPT_VERSION = "message-classifier-v1"
@@ -88,12 +94,7 @@ class MessageClassifier:
         if not stripped and not has_attachment:
             return AnalysisResult(MessageKind.EMPTY, "", prompt_version=self.prompt_version)
 
-        provider_id = str(
-            self.config.get("classification_provider_id", "") or ""
-        ).strip()
-        try:
-            if not provider_id:
-                provider_id = await self.context.get_current_chat_provider_id(umo)
+        async def classify_with(provider_id: str) -> AnalysisResult:
             response = await self.context.llm_generate(
                 chat_provider_id=provider_id,
                 system_prompt=CLASSIFIER_SYSTEM_PROMPT,
@@ -113,17 +114,33 @@ class MessageClassifier:
                 provider_id=provider_id,
                 model_id=self._extract_model_id(response, provider_id),
             )
-        except Exception as exc:
+
+        try:
+            result, _, failures = await call_with_provider_fallback(
+                context=self.context,
+                config=self.config,
+                primary_key="classification_provider_id",
+                umo=umo,
+                operation=classify_with,
+            )
+            if failures:
+                warning = self._merge_warning(
+                    result.warning,
+                    f"模型已降级：{format_provider_failures(failures)}",
+                )
+                return replace(result, warning=warning)
+            return result
+        except ProviderFallbackExhausted as exc:
             body = stripped if stripped else "[附件消息]"
             return AnalysisResult(
                 kind=MessageKind.QUESTION,
                 body_text=body,
                 intent="classifier-fallback",
                 confidence=0.0,
-                provider_id=provider_id,
-                model_id=provider_id or "unknown",
+                provider_id="local",
+                model_id="local-rules",
                 prompt_version=self.prompt_version,
-                warning=f"{type(exc).__name__}: {str(exc)[:300]}",
+                warning=f"所有分类模型均失败，已按问题保存：{str(exc)[:700]}",
             )
 
     @staticmethod
@@ -194,3 +211,7 @@ class MessageClassifier:
         raw = getattr(response, "raw_completion", None)
         model = getattr(raw, "model", None) if raw is not None else None
         return str(model or provider_id or "unknown")
+
+    @staticmethod
+    def _merge_warning(*parts: str) -> str:
+        return "；".join(part.strip("； ") for part in parts if part.strip("； "))

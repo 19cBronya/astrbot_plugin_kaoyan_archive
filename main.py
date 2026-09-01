@@ -23,7 +23,7 @@ from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.2.1"
+PLUGIN_VERSION = "0.2.2"
 FRAMEWORK_COMMANDS = frozenset({"status", "archive", "retry", "latest"})
 FRAMEWORK_COMMAND_HELP = (
     "/kaoyan status",
@@ -365,6 +365,9 @@ class KaoyanArchivePlugin(Star):
                     "classifier_mode": "每条自然语言消息由 LLM 判断：问题 / 归档 / 其他指令",
                     "classification_provider_id": str(
                         self.config.get("classification_provider_id", "") or ""
+                    ),
+                    "fallback_provider_id": str(
+                        self.config.get("fallback_provider_id", "") or ""
                     ),
                     "framework_commands": list(FRAMEWORK_COMMAND_HELP),
                     "routing_status": self._routing_statuses(),
