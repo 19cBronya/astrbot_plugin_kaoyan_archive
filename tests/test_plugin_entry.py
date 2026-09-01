@@ -118,8 +118,19 @@ def _install_astrbot_api_stubs(monkeypatch, data_root: Path) -> None:
 
 def _load_plugin_module(monkeypatch, tmp_path: Path):
     _install_astrbot_api_stubs(monkeypatch, tmp_path)
-    module_name = "kaoyan_archive_plugin_entry_test"
-    plugin_path = Path(__file__).parents[1] / "main.py"
+    plugin_root = Path(__file__).parents[1]
+    package_paths = {
+        "data": plugin_root.parent.parent,
+        "data.plugins": plugin_root.parent,
+        "data.plugins.astrbot_plugin_kaoyan_archive": plugin_root,
+    }
+    for package_name, package_path in package_paths.items():
+        package = types.ModuleType(package_name)
+        package.__path__ = [str(package_path)]
+        monkeypatch.setitem(sys.modules, package_name, package)
+
+    module_name = "data.plugins.astrbot_plugin_kaoyan_archive.main"
+    plugin_path = plugin_root / "main.py"
     spec = importlib.util.spec_from_file_location(module_name, plugin_path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)

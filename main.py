@@ -15,11 +15,11 @@ from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.message.components import Plain
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
-from kaoyan_archive.analyzer import AnalysisResult, MessageAnalyzer, MessageKind
-from kaoyan_archive.archive_service import ArchiveResult, ArchiveService
-from kaoyan_archive.attachments import AttachmentStore
-from kaoyan_archive.storage import ArchiveStore
-from kaoyan_archive.utils import json_safe, utc_timestamp
+from .kaoyan_archive.analyzer import AnalysisResult, MessageAnalyzer, MessageKind
+from .kaoyan_archive.archive_service import ArchiveResult, ArchiveService
+from .kaoyan_archive.attachments import AttachmentStore
+from .kaoyan_archive.storage import ArchiveStore
+from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
