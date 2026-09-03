@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  inferInlineMath,
   MATH_DELIMITERS,
   parseSummaryBlocks,
   readDisplayMath,
@@ -47,5 +48,22 @@ test("auto-render configuration includes display and inline delimiters", () => {
     MATH_DELIMITERS.filter(({ left }) => ["\\[", "\\(", "$$", "$"].includes(left))
       .map(({ left, display }) => [left, display]),
     [["$$", true], ["\\[", true], ["\\(", false], ["$", false]],
+  );
+});
+
+test("infers obvious undelimited formulas in archived overviews", () => {
+  const inferred = inferInlineMath(
+    "计算 z=∫_0^1 |xy-t|f(t)dt，并由 z_xx=2y²f(xy) 得 z_yy=2x²f(xy)。",
+  );
+
+  assert.match(inferred, /\\\(z=\\int _0\^1 \|xy-t\|f\(t\)dt\\\)/);
+  assert.match(inferred, /\\\(z_\{xx\}=2y\^2f\(xy\)\\\)/);
+  assert.match(inferred, /\\\(z_\{yy\}=2x\^2f\(xy\)\\\)/);
+});
+
+test("preserves explicit formulas and ordinary prose", () => {
+  assert.equal(
+    inferInlineMath(String.raw`已有 \(z_x=1\)，编号 2026。`),
+    String.raw`已有 \(z_x=1\)，编号 2026。`,
   );
 });

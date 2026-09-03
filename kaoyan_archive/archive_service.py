@@ -14,15 +14,15 @@ from .provider_fallback import (
 from .storage import ArchiveStore
 
 
-ARCHIVE_PROMPT_VERSION = "archive-v4"
+ARCHIVE_PROMPT_VERSION = "archive-v5"
 ARCHIVE_SYSTEM_PROMPT = r"""你是考研答疑归档器，只整理给定对话，不继续答题。
 返回严格 JSON 对象，字段为 subject、title、overview、knowledge_points、summary：
 - subject 必须从允许科目中选择；
 - title 用一句简洁中文概括题目；
-- overview 使用 1 至 2 句中文概括问题目标、核心结论或解题方向，适合直接显示在题目列表中，不使用 Markdown，不超过 160 字；
-- knowledge_points 是 1 至 8 个简洁的中文知识点字符串组成的数组；
+- overview 使用 1 至 2 句中文概括问题目标、核心结论或解题方向，适合直接显示在题目列表中，不使用标题或列表，不超过 160 字；其中每个公式片段必须用 $...$ 包围；
+- knowledge_points 是 1 至 8 个简洁的中文知识点字符串组成的数组；其中出现公式时必须用 $...$ 包围；
 - summary 使用 Markdown，依次整理题目、关键追问、解答结论和仍未解决点；
-- 完整保留有意义的数学公式，行内公式使用 \(...\)，独立公式使用 \[...\]；按 JSON 规则转义反斜杠；
+- 完整保留有意义的数学公式，所有字段的行内公式使用 $...$，summary 中的独立公式使用 $$...$$；
 - 不得编造对话中没有的信息，不输出 JSON 之外的解释。"""
 
 

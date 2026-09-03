@@ -134,6 +134,91 @@ const KATEX_OPTIONS = {
   errorColor: "#b5413e",
 };
 
+const LOOSE_MATH_SYMBOLS = new Set([
+  "∫", "∑", "√", "∞", "≤", "≥", "≠", "≈", "±", "×", "÷", "·", "²", "³", "′", "″",
+]);
+
+function isLooseMathCharacter(character) {
+  return /[A-Za-z0-9\s_=+\-*/^()[\]{}|.,\\]/u.test(character)
+    || LOOSE_MATH_SYMBOLS.has(character);
+}
+
+function looksLikeLooseMath(expression) {
+  return /[A-Za-z0-9]/u.test(expression)
+    && (/[=_^]/u.test(expression) || /[∫∑√∞≤≥≠≈±×÷²³]/u.test(expression));
+}
+
+function normalizeLooseMath(expression) {
+  return expression
+    .replaceAll("∫", "\\int ")
+    .replaceAll("∑", "\\sum ")
+    .replaceAll("∞", "\\infty ")
+    .replaceAll("≤", "\\le ")
+    .replaceAll("≥", "\\ge ")
+    .replaceAll("≠", "\\ne ")
+    .replaceAll("≈", "\\approx ")
+    .replaceAll("±", "\\pm ")
+    .replaceAll("×", "\\times ")
+    .replaceAll("÷", "\\div ")
+    .replaceAll("²", "^2")
+    .replaceAll("³", "^3")
+    .replace(/_([A-Za-z]{2,})/gu, "_{$1}");
+}
+
+function explicitMathAt(source, index) {
+  const delimiters = [
+    ["\\[", "\\]"],
+    ["\\(", "\\)"],
+    ["$$", "$$"],
+    ["$", "$"],
+  ];
+  for (const [left, right] of delimiters) {
+    if (!source.startsWith(left, index)) continue;
+    const end = source.indexOf(right, index + left.length);
+    if (end >= 0) return source.slice(index, end + right.length);
+  }
+  return "";
+}
+
+export function inferInlineMath(text) {
+  const source = String(text || "");
+  let rendered = "";
+  for (let index = 0; index < source.length;) {
+    if (/\s/u.test(source[index])) {
+      let next = index;
+      while (next < source.length && /\s/u.test(source[next])) next += 1;
+      const spacedExplicit = explicitMathAt(source, next);
+      if (spacedExplicit) {
+        rendered += source.slice(index, next) + spacedExplicit;
+        index = next + spacedExplicit.length;
+        continue;
+      }
+    }
+    const explicit = explicitMathAt(source, index);
+    if (explicit) {
+      rendered += explicit;
+      index += explicit.length;
+      continue;
+    }
+    if (!isLooseMathCharacter(source[index])) {
+      rendered += source[index];
+      index += 1;
+      continue;
+    }
+    let end = index + 1;
+    while (end < source.length && isLooseMathCharacter(source[end])) end += 1;
+    const candidate = source.slice(index, end);
+    const leading = candidate.match(/^\s*/u)?.[0] || "";
+    const trailing = candidate.match(/\s*$/u)?.[0] || "";
+    const expression = candidate.slice(leading.length, candidate.length - trailing.length);
+    rendered += looksLikeLooseMath(expression)
+      ? `${leading}\\(${normalizeLooseMath(expression)}\\)${trailing}`
+      : candidate;
+    index = end;
+  }
+  return rendered;
+}
+
 export function renderDisplayMath(target, expression, source) {
   target.classList.add("math-block");
   if (typeof globalThis.katex?.render !== "function") {

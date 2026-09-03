@@ -1,4 +1,5 @@
 import {
+  inferInlineMath,
   parseSummaryBlocks,
   renderDisplayMath,
   renderMath,
@@ -133,9 +134,9 @@ function renderQuestions() {
     title.textContent = item.title || "正在整理题目";
     const overview = document.createElement("p");
     overview.className = "question-overview";
-    overview.textContent = item.overview || (
+    overview.textContent = inferInlineMath(item.overview || (
       item.status === "FINALIZING" ? "归档概览生成中…" : "暂无题目概览"
-    );
+    ));
     const meta = document.createElement("div");
     meta.className = "question-meta";
     for (const value of [item.subject || "待分类", item.umo, `${item.event_count || 0} 条消息`, dateTime(item.archived_at || item.created_at)]) {
@@ -381,7 +382,7 @@ function withTimeout(promise, timeoutMs, message) {
 function knowledgeChip(label) {
   const chip = document.createElement("span");
   chip.className = "knowledge-chip";
-  chip.textContent = label;
+  chip.textContent = inferInlineMath(label);
   return chip;
 }
 
@@ -420,19 +421,19 @@ function renderSummary(markdown) {
       container.append(node);
     } else if (block.type === "heading") {
       const node = document.createElement(`h${block.level}`);
-      node.textContent = block.text;
+      node.textContent = inferInlineMath(block.text);
       container.append(node);
     } else if (block.type === "list") {
       const list = document.createElement("ul");
       for (const text of block.items) {
         const item = document.createElement("li");
-        item.textContent = text;
+        item.textContent = inferInlineMath(text);
         list.append(item);
       }
       container.append(list);
     } else {
       const paragraph = document.createElement("p");
-      paragraph.textContent = block.text;
+      paragraph.textContent = inferInlineMath(block.text);
       container.append(paragraph);
     }
   }
