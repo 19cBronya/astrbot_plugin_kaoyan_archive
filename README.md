@@ -14,6 +14,7 @@ AstrBot 私聊考研答疑归档插件。它不会接管或修改 AstrBot 的正
 - 归档时调用一次可配置的 AstrBot Provider，生成科目、标题和 Markdown 摘要；模型不可用时自动使用本地规则，不影响编号入库。
 - 按科目事务化分配连续 ID，例如 `操作系统0001`。
 - 提供 AstrBot Plugin Page：全量题目列表、科目/状态/会话下拉筛选、知识点与总结、完整原始会话、软删除、恢复和失败重试。
+- Plugin Page 使用随插件打包的 KaTeX 离线渲染总结与原始会话中的 LaTeX 公式，无需访问 CDN。
 
 ## 安装与配置
 
@@ -107,6 +108,8 @@ data/plugin_data/astrbot_plugin_kaoyan_archive/
 python3 -m pytest -q
 python3 -m compileall -q main.py kaoyan_archive
 ```
+
+页面公式支持 `\\(...\\)`、`\\[...\\]`、`$...$`、`$$...$$` 和常见的 `equation`、`align`、`gather` 环境。KaTeX 0.18.5 的运行文件、字体和 MIT 许可证位于 `pages/archive/vendor/katex/`，插件页面可完全离线加载。
 
 正式安装前还应在目标服务器做一次只读检查，确认 AstrBot 版本、UMO、OneBot 主动消息能力、Provider 和数据目录权限。
 

@@ -148,6 +148,15 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px c
 .summary p { margin: 8px 0; }
 .summary ul { margin: 8px 0; padding-left: 1.4rem; }
 .summary li { margin: 5px 0; }
+.math-block, .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.math-block { margin: 12px 0; padding: 8px 4px; text-align: center; }
+.math-block .katex-display { margin: 0; padding: 2px 0; }
+.math-fallback { color: var(--danger); text-align: left; white-space: pre-wrap; }
+.event-body .katex { white-space: normal; }
 .timeline-heading { display: flex; align-items: center; justify-content: space-between; }
 .timeline { display: grid; gap: 12px; }
 .event { position: relative; padding: 14px 16px 14px 18px; border-left: 3px solid var(--line); border-radius: 0 12px 12px 0; background: var(--bg); }

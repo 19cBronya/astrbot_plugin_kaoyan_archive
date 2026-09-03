@@ -5,7 +5,11 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from kaoyan_archive.archive_service import ArchiveService
+from kaoyan_archive.archive_service import (
+    ARCHIVE_PROMPT_VERSION,
+    ARCHIVE_SYSTEM_PROMPT,
+    ArchiveService,
+)
 from kaoyan_archive.storage import ArchiveStore
 
 
@@ -104,6 +108,13 @@ async def build_question(store: ArchiveStore) -> str:
     )
     assert question
     return question["uuid"]
+
+
+def test_archive_prompt_preserves_renderable_formula_delimiters() -> None:
+    assert ARCHIVE_PROMPT_VERSION == "archive-v3"
+    assert r"\(...\)" in ARCHIVE_SYSTEM_PROMPT
+    assert r"\[...\]" in ARCHIVE_SYSTEM_PROMPT
+    assert "完整保留" in ARCHIVE_SYSTEM_PROMPT
 
 
 def test_local_archive_assigns_subject_and_id(tmp_path: Path) -> None:

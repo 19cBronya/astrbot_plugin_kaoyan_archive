@@ -1,3 +1,9 @@
+import {
+  parseSummaryBlocks,
+  renderDisplayMath,
+  renderMath,
+} from "./math-renderer.mjs";
+
 const bridge = window.AstrBotPluginPage;
 
 const state = {
@@ -143,6 +149,7 @@ function renderQuestions() {
     });
     list.append(card);
   }
+  renderMath(list);
 }
 
 function renderDetail(detail) {
@@ -198,6 +205,7 @@ function renderDetail(detail) {
   } else {
     actions.append(actionButton("软删除", "danger", () => actOnQuestion("delete")));
   }
+  renderMath($("detail-overlay"));
 }
 
 function knowledgeChip(label) {
@@ -235,37 +243,30 @@ function renderKnowledge(detail) {
 function renderSummary(markdown) {
   const container = $("detail-summary");
   container.replaceChildren();
-  let list = null;
-  for (const rawLine of String(markdown).split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) {
-      list = null;
-      continue;
-    }
-    const heading = line.match(/^(#{1,3})\s+(.+)$/);
-    if (heading) {
-      list = null;
-      const node = document.createElement(`h${heading[1].length}`);
-      node.textContent = heading[2];
+  for (const block of parseSummaryBlocks(markdown)) {
+    if (block.type === "math") {
+      const node = document.createElement("div");
+      renderDisplayMath(node, block.expression, block.source);
       container.append(node);
-      continue;
-    }
-    const bullet = line.match(/^[-*]\s+(.+)$/);
-    if (bullet) {
-      if (!list) {
-        list = document.createElement("ul");
-        container.append(list);
+    } else if (block.type === "heading") {
+      const node = document.createElement(`h${block.level}`);
+      node.textContent = block.text;
+      container.append(node);
+    } else if (block.type === "list") {
+      const list = document.createElement("ul");
+      for (const text of block.items) {
+        const item = document.createElement("li");
+        item.textContent = text;
+        list.append(item);
       }
-      const item = document.createElement("li");
-      item.textContent = bullet[1];
-      list.append(item);
-      continue;
+      container.append(list);
+    } else {
+      const paragraph = document.createElement("p");
+      paragraph.textContent = block.text;
+      container.append(paragraph);
     }
-    list = null;
-    const paragraph = document.createElement("p");
-    paragraph.textContent = line;
-    container.append(paragraph);
   }
+  renderMath(container);
 }
 
 function relationLabel(relation) {
