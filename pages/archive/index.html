@@ -80,26 +80,53 @@
           <button id="close-detail" class="icon-button" type="button" aria-label="关闭">×</button>
         </header>
         <div id="detail-meta" class="detail-meta"></div>
-        <section class="detail-section">
-          <p class="section-kicker">KNOWLEDGE POINTS</p>
-          <h3>知识点</h3>
-          <div id="detail-knowledge" class="knowledge-list"></div>
-        </section>
-        <section class="detail-section">
-          <p class="section-kicker">ARCHIVE SUMMARY</p>
-          <h3>题目总结</h3>
-          <div id="detail-summary" class="summary"></div>
-        </section>
-        <section class="detail-section">
-          <div class="timeline-heading">
-            <div>
-              <p class="section-kicker">RAW CONVERSATION</p>
-              <h3>原始会话</h3>
-            </div>
-            <span id="detail-event-count" class="counter"></span>
+        <form id="edit-form" class="edit-form hidden">
+          <div class="edit-grid">
+            <label>
+              <span>题目标题</span>
+              <input id="edit-title" type="text" maxlength="200" required />
+            </label>
+            <label>
+              <span>归档科目</span>
+              <select id="edit-subject" required></select>
+            </label>
+            <label>
+              <span>题目概览</span>
+              <textarea id="edit-overview" rows="3" maxlength="300" placeholder="1–2 句话概括问题和核心解题方向"></textarea>
+            </label>
+            <label>
+              <span>知识点</span>
+              <textarea id="edit-knowledge" rows="5" placeholder="一行一个知识点，最多 20 个"></textarea>
+            </label>
+            <label>
+              <span>Markdown 总结</span>
+              <textarea id="edit-summary" class="summary-editor" rows="16" maxlength="200000" required></textarea>
+            </label>
           </div>
-          <div id="detail-timeline" class="timeline"></div>
-        </section>
+          <p class="edit-note">这里只修改归档展示内容；题号和原始会话始终保持不变。保存前的版本会进入修订记录。</p>
+        </form>
+        <div id="detail-view">
+          <section class="detail-section">
+            <p class="section-kicker">KNOWLEDGE POINTS</p>
+            <h3>知识点</h3>
+            <div id="detail-knowledge" class="knowledge-list"></div>
+          </section>
+          <section class="detail-section">
+            <p class="section-kicker">ARCHIVE SUMMARY</p>
+            <h3>题目总结</h3>
+            <div id="detail-summary" class="summary"></div>
+          </section>
+          <section class="detail-section">
+            <div class="timeline-heading">
+              <div>
+                <p class="section-kicker">RAW CONVERSATION</p>
+                <h3>原始会话</h3>
+              </div>
+              <span id="detail-event-count" class="counter"></span>
+            </div>
+            <div id="detail-timeline" class="timeline"></div>
+          </section>
+        </div>
         <footer id="detail-actions" class="detail-actions"></footer>
       </article>
     </div>

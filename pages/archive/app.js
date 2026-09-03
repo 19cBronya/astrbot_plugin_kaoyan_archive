@@ -11,6 +11,7 @@ const state = {
   stats: null,
   questions: [],
   active: null,
+  editing: false,
 };
 const imagePreviewCache = new Map();
 const previewableImageTypes = new Set([
@@ -167,6 +168,9 @@ function renderQuestions() {
 
 function renderDetail(detail) {
   state.active = detail;
+  state.editing = false;
+  $("edit-form").classList.add("hidden");
+  $("detail-view").classList.remove("hidden");
   $("detail-id").textContent = detail.public_id || detail.uuid;
   $("detail-title").textContent = detail.title || "未命名题目";
   renderSummary(detail.summary || detail.error || "暂无总结");
@@ -181,6 +185,7 @@ function renderDetail(detail) {
     badge(dateTime(detail.archived_at || detail.created_at)),
   );
   if (detail.analysis_warning) meta.append(badge(detail.analysis_warning, "warn"));
+  if (detail.revision_count) meta.append(badge(`已修订 ${detail.revision_count} 次`));
 
   const timeline = $("detail-timeline");
   timeline.replaceChildren();
@@ -204,18 +209,92 @@ function renderDetail(detail) {
     timeline.append(item);
   }
 
+  renderDetailActions(detail);
+  renderMath($("detail-overlay"));
+}
+
+function renderDetailActions(detail) {
   const actions = $("detail-actions");
   actions.replaceChildren();
+  if (detail.status === "ARCHIVED" && !detail.deleted_at) {
+    actions.append(actionButton("编辑归档", "secondary", beginEdit));
+  }
   if (detail.status === "FINALIZE_FAILED") {
-    const retry = actionButton("重新整理", "primary", () => actOnQuestion("retry"));
-    actions.append(retry);
+    actions.append(actionButton("重新整理", "primary", () => actOnQuestion("retry")));
   }
   if (detail.deleted_at) {
     actions.append(actionButton("恢复题目", "primary", () => actOnQuestion("restore")));
   } else {
     actions.append(actionButton("软删除", "danger", () => actOnQuestion("delete")));
   }
-  renderMath($("detail-overlay"));
+}
+
+function beginEdit() {
+  if (!state.active || state.active.status !== "ARCHIVED" || state.active.deleted_at) return;
+  state.editing = true;
+  $("edit-title").value = state.active.title || "";
+  const subjectSelect = $("edit-subject");
+  const subjects = [...(state.config?.subjects || [])];
+  if (state.active.subject && !subjects.includes(state.active.subject)) {
+    subjects.push(state.active.subject);
+  }
+  subjectSelect.replaceChildren(
+    ...subjects.map((subject) => new Option(subject, subject)),
+  );
+  subjectSelect.value = state.active.subject || subjects[0] || "";
+  $("edit-overview").value = state.active.overview || "";
+  $("edit-knowledge").value = (state.active.knowledge_points || []).join("\n");
+  $("edit-summary").value = state.active.summary || "";
+  $("detail-view").classList.add("hidden");
+  $("edit-form").classList.remove("hidden");
+  const actions = $("detail-actions");
+  const save = actionButton("保存修改", "primary", () => saveEdit(save));
+  actions.replaceChildren(
+    actionButton("取消", "secondary", cancelEdit),
+    save,
+  );
+  $("edit-title").focus();
+}
+
+function cancelEdit() {
+  if (!state.active) return;
+  state.editing = false;
+  $("edit-form").classList.add("hidden");
+  $("detail-view").classList.remove("hidden");
+  renderDetailActions(state.active);
+}
+
+async function saveEdit(button) {
+  if (!state.active || !$("edit-form").reportValidity()) return;
+  const knowledgePoints = [...new Set(
+    $("edit-knowledge").value
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean),
+  )];
+  if (knowledgePoints.length > 20 || knowledgePoints.some((item) => item.length > 100)) {
+    toast("知识点最多 20 个，每项不超过 100 字", true);
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "保存中…";
+  try {
+    await apiPost(`questions/${encodeURIComponent(state.active.uuid)}/edit`, {
+      subject: $("edit-subject").value,
+      title: $("edit-title").value,
+      overview: $("edit-overview").value,
+      knowledge_points: knowledgePoints,
+      summary: $("edit-summary").value,
+    });
+    const refreshed = await apiGet(`questions/${encodeURIComponent(state.active.uuid)}`);
+    renderDetail(refreshed);
+    await loadQuestions();
+    toast("归档内容已保存");
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "保存修改";
+    toast(error.message || "保存修改失败", true);
+  }
 }
 
 function renderAttachment(attachment) {
@@ -431,11 +510,15 @@ $("filters").addEventListener("submit", (event) => {
   event.preventDefault();
   loadQuestions();
 });
+$("edit-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+});
 $("filters").addEventListener("change", (event) => {
   if (event.target.matches("select, input[type='checkbox']")) loadQuestions();
 });
 $("refresh").addEventListener("click", () => Promise.all([loadOverview(), loadQuestions()]));
 function closeDetail() {
+  state.editing = false;
   $("detail-overlay").classList.add("hidden");
   document.body.classList.remove("dialog-open");
 }

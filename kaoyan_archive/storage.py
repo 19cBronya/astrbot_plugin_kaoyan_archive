@@ -12,7 +12,7 @@ from .attachments import CapturedAttachment
 from .utils import canonical_json, utc_timestamp
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class ArchiveStore:
@@ -128,6 +128,32 @@ class ArchiveStore:
                 CREATE INDEX IF NOT EXISTS idx_questions_umo_boundary
                     ON questions(umo, boundary_event_id);
                 CREATE INDEX IF NOT EXISTS idx_questions_public_id ON questions(public_id);
+
+                CREATE TABLE IF NOT EXISTS question_revisions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    question_uuid TEXT NOT NULL REFERENCES questions(uuid),
+                    revision INTEGER NOT NULL,
+                    subject TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    overview TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    knowledge_points_json TEXT NOT NULL DEFAULT '[]',
+                    editor TEXT NOT NULL DEFAULT '',
+                    created_at REAL NOT NULL,
+                    UNIQUE(question_uuid, revision)
+                );
+                CREATE INDEX IF NOT EXISTS idx_question_revisions_question
+                    ON question_revisions(question_uuid, revision DESC);
+                CREATE TRIGGER IF NOT EXISTS question_revisions_no_update
+                BEFORE UPDATE ON question_revisions
+                BEGIN
+                    SELECT RAISE(ABORT, 'question revisions are append-only');
+                END;
+                CREATE TRIGGER IF NOT EXISTS question_revisions_no_delete
+                BEFORE DELETE ON question_revisions
+                BEGIN
+                    SELECT RAISE(ABORT, 'question revisions are append-only');
+                END;
 
                 CREATE TABLE IF NOT EXISTS question_events (
                     question_uuid TEXT NOT NULL REFERENCES questions(uuid),
@@ -892,7 +918,141 @@ class ArchiveStore:
             ).fetchall()
             result = self._question_dict(question)
             result["events"] = [self._event_dict(row) for row in events]
+            result["revision_count"] = int(
+                db.execute(
+                    "SELECT COUNT(*) AS count FROM question_revisions WHERE question_uuid=?",
+                    (question_uuid,),
+                ).fetchone()["count"]
+            )
             return result
+
+    async def update_question_archive(
+        self,
+        *,
+        question_uuid: str,
+        subject: str,
+        title: str,
+        overview: str,
+        knowledge_points: list[str],
+        summary: str,
+        editor: str,
+    ) -> dict[str, Any] | None:
+        return self._update_question_archive_sync(
+            question_uuid,
+            subject,
+            title,
+            overview,
+            knowledge_points,
+            summary,
+            editor,
+        )
+
+    def _update_question_archive_sync(
+        self,
+        question_uuid: str,
+        subject: str,
+        title: str,
+        overview: str,
+        knowledge_points: list[str],
+        summary: str,
+        editor: str,
+    ) -> dict[str, Any] | None:
+        cleaned_subject = self._safe_subject(subject)
+        cleaned_title = re.sub(r"\s+", " ", title).strip()[:200]
+        cleaned_summary = summary.strip()[:200000]
+        if not cleaned_title or not cleaned_summary:
+            raise ValueError("title and summary are required")
+        cleaned_overview = re.sub(r"\s+", " ", overview).strip()[:300]
+        if not cleaned_overview:
+            cleaned_overview = self._overview_from_text(cleaned_summary, cleaned_title)
+        cleaned_points = [
+            str(item).strip()[:100]
+            for item in knowledge_points
+            if str(item).strip()
+        ][:20]
+        cleaned_points_json = canonical_json(cleaned_points)
+
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute(
+                "SELECT * FROM questions WHERE uuid=?", (question_uuid,)
+            ).fetchone()
+            if (
+                not current
+                or current["status"] != "ARCHIVED"
+                or current["deleted_at"] is not None
+            ):
+                db.rollback()
+                return None
+            if (
+                current["subject"] == cleaned_subject
+                and current["title"] == cleaned_title
+                and current["overview"] == cleaned_overview
+                and current["summary"] == cleaned_summary
+                and current["knowledge_points_json"] == cleaned_points_json
+            ):
+                db.rollback()
+                return self._question_dict(current)
+            revision = int(
+                db.execute(
+                    """
+                    SELECT COALESCE(MAX(revision), 0) + 1 AS value
+                    FROM question_revisions WHERE question_uuid=?
+                    """,
+                    (question_uuid,),
+                ).fetchone()["value"]
+            )
+            now = utc_timestamp()
+            db.execute(
+                """
+                INSERT INTO question_revisions(
+                    question_uuid,revision,subject,title,overview,summary,
+                    knowledge_points_json,editor,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    question_uuid,
+                    revision,
+                    current["subject"],
+                    current["title"],
+                    current["overview"],
+                    current["summary"],
+                    current["knowledge_points_json"],
+                    editor[:100],
+                    now,
+                ),
+            )
+            db.execute(
+                """
+                UPDATE questions
+                SET subject=?,title=?,overview=?,summary=?,knowledge_points_json=?
+                WHERE uuid=?
+                """,
+                (
+                    cleaned_subject,
+                    cleaned_title,
+                    cleaned_overview,
+                    cleaned_summary,
+                    cleaned_points_json,
+                    question_uuid,
+                ),
+            )
+            self._audit(
+                db,
+                "edit_archive",
+                "question",
+                question_uuid,
+                {
+                    "revision": revision,
+                    "editor": editor[:100],
+                    "subject": cleaned_subject,
+                },
+            )
+            db.commit()
+            updated = db.execute(
+                "SELECT * FROM questions WHERE uuid=?", (question_uuid,)
+            ).fetchone()
+            return self._question_dict(updated)
 
     async def soft_delete_question(self, question_uuid: str, deleted: bool) -> bool:
         return self._soft_delete_question_sync(question_uuid, deleted)

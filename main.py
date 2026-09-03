@@ -24,7 +24,7 @@ from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.5.0"
+PLUGIN_VERSION = "0.6.0"
 INLINE_IMAGE_MIME_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"}
 )
@@ -339,6 +339,7 @@ class KaoyanArchivePlugin(Star):
             ("/config", self.web_config, ["GET", "POST"], "归档配置"),
             ("/questions", self.web_questions, ["GET"], "题目列表"),
             ("/questions/<question_uuid>", self.web_question, ["GET"], "题目详情"),
+            ("/questions/<question_uuid>/edit", self.web_question_edit, ["POST"], "编辑题目归档"),
             ("/questions/<question_uuid>/action", self.web_question_action, ["POST"], "题目操作"),
             ("/attachments/<sha256>", self.web_attachment, ["GET"], "图片附件预览"),
         ]
@@ -420,6 +421,53 @@ class KaoyanArchivePlugin(Star):
         if not detail:
             return error_response("question not found", status_code=404)
         return json_response(detail)
+
+    async def web_question_edit(self, question_uuid: str):
+        if response := self._require_dashboard_user():
+            return response
+        payload = await request.json(default={})
+        if not isinstance(payload, dict):
+            return error_response("request body must be an object", status_code=400)
+        subject = payload.get("subject")
+        title = payload.get("title")
+        overview = payload.get("overview")
+        summary = payload.get("summary")
+        knowledge_points = payload.get("knowledge_points")
+        subjects = self._cfg_list("subjects")
+        if not isinstance(subject, str) or not subject.strip():
+            return error_response("invalid subject", status_code=400)
+        if subjects and subject not in subjects:
+            return error_response("subject is not configured", status_code=400)
+        if not isinstance(title, str) or not title.strip() or len(title) > 200:
+            return error_response("invalid title", status_code=400)
+        if not isinstance(overview, str) or len(overview) > 300:
+            return error_response("invalid overview", status_code=400)
+        if not isinstance(summary, str) or not summary.strip() or len(summary) > 200000:
+            return error_response("invalid summary", status_code=400)
+        if (
+            not isinstance(knowledge_points, list)
+            or len(knowledge_points) > 20
+            or not all(
+                isinstance(item, str) and len(item) <= 100
+                for item in knowledge_points
+            )
+        ):
+            return error_response("invalid knowledge_points", status_code=400)
+        try:
+            updated = await self.store.update_question_archive(
+                question_uuid=question_uuid,
+                subject=subject,
+                title=title,
+                overview=overview,
+                knowledge_points=knowledge_points,
+                summary=summary,
+                editor=str(request.username or "dashboard"),
+            )
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        if not updated:
+            return error_response("question is not editable", status_code=409)
+        return json_response({"saved": True, "question": updated})
 
     async def web_attachment(self, sha256: str):
         if response := self._require_dashboard_user():

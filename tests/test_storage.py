@@ -232,7 +232,7 @@ def test_schema_migrates_existing_questions_for_derived_archive_fields(tmp_path:
     with sqlite3.connect(store.db_path) as db:
         db.execute("ALTER TABLE questions DROP COLUMN knowledge_points_json")
         db.execute("ALTER TABLE questions DROP COLUMN overview")
-        db.execute("DELETE FROM schema_migrations WHERE version IN (2,3)")
+        db.execute("DELETE FROM schema_migrations WHERE version IN (2,3,4)")
 
     asyncio.run(store.initialize())
     detail = asyncio.run(store.question_detail(question["uuid"]))
@@ -240,9 +240,14 @@ def test_schema_migrates_existing_questions_for_derived_archive_fields(tmp_path:
     with sqlite3.connect(store.db_path) as db:
         columns = {row[1] for row in db.execute("PRAGMA table_info(questions)")}
         versions = {row[0] for row in db.execute("SELECT version FROM schema_migrations")}
+        tables = {
+            row[0]
+            for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
     assert "knowledge_points_json" in columns
     assert "overview" in columns
-    assert 3 in versions
+    assert 4 in versions
+    assert "question_revisions" in tables
     assert detail
     assert "资源分配" in detail["overview"]
 
@@ -293,3 +298,89 @@ def test_question_list_filters_and_searches_overview(tmp_path: Path) -> None:
     assert len(rows) == 1
     assert "页表和 TLB" in rows[0]["overview"]
     assert rows[0]["knowledge_points"] == ["页表", "TLB"]
+
+
+def test_edit_archive_saves_append_only_revision_and_preserves_events(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    umo = "default:FriendMessage:edit"
+    event_id = add_event(store, umo=umo, direction="user", text="原始题目不可修改")
+    boundary_id = add_event(
+        store,
+        umo=umo,
+        direction="user",
+        text="我问完了",
+        body_text="",
+        boundary=True,
+    )
+    question = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=boundary_id)
+    )
+    assert question
+    asyncio.run(store.claim_job(question["uuid"]))
+    asyncio.run(
+        store.complete_question(
+            question_uuid=question["uuid"],
+            subject="数学",
+            title="原标题",
+            overview="原概览",
+            summary="## 原总结",
+            knowledge_points=["原知识点"],
+            provider_id="local",
+            model_id="local",
+            prompt_version="test",
+        )
+    )
+
+    updated = asyncio.run(
+        store.update_question_archive(
+            question_uuid=question["uuid"],
+            subject="操作系统",
+            title="新标题",
+            overview="新概览",
+            knowledge_points=["新知识点"],
+            summary="## 新总结",
+            editor="dashboard-user",
+        )
+    )
+    detail = asyncio.run(store.question_detail(question["uuid"]))
+
+    assert updated and updated["title"] == "新标题"
+    assert detail and detail["subject"] == "操作系统"
+    assert detail["overview"] == "新概览"
+    assert detail["knowledge_points"] == ["新知识点"]
+    assert detail["revision_count"] == 1
+    assert next(event for event in detail["events"] if event["id"] == event_id)["text"] == "原始题目不可修改"
+
+    asyncio.run(
+        store.update_question_archive(
+            question_uuid=question["uuid"],
+            subject="操作系统",
+            title="新标题",
+            overview="新概览",
+            knowledge_points=["新知识点"],
+            summary="## 新总结",
+            editor="dashboard-user",
+        )
+    )
+    unchanged = asyncio.run(store.question_detail(question["uuid"]))
+    assert unchanged and unchanged["revision_count"] == 1
+
+    with sqlite3.connect(store.db_path) as db:
+        db.row_factory = sqlite3.Row
+        revision = db.execute(
+            "SELECT * FROM question_revisions WHERE question_uuid=?",
+            (question["uuid"],),
+        ).fetchone()
+        assert revision is not None
+        assert revision["subject"] == "数学"
+        assert revision["title"] == "原标题"
+        assert revision["summary"] == "## 原总结"
+        try:
+            db.execute(
+                "UPDATE question_revisions SET title='tampered' WHERE id=?",
+                (revision["id"],),
+            )
+        except sqlite3.IntegrityError as exc:
+            assert "append-only" in str(exc)
+        else:
+            raise AssertionError("revision update unexpectedly succeeded")

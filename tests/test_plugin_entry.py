@@ -171,12 +171,13 @@ def test_plugin_entry_registers_page_and_defaults_to_deny(monkeypatch, tmp_path:
     context = _FakeContext()
     plugin = module.KaoyanArchivePlugin(context, _Config())
 
-    assert len(context.routes) == 6
+    assert len(context.routes) == 7
     assert {route for route, *_ in context.routes} == {
         f"/{module.PLUGIN_NAME}/stats",
         f"/{module.PLUGIN_NAME}/config",
         f"/{module.PLUGIN_NAME}/questions",
         f"/{module.PLUGIN_NAME}/questions/<question_uuid>",
+        f"/{module.PLUGIN_NAME}/questions/<question_uuid>/edit",
         f"/{module.PLUGIN_NAME}/questions/<question_uuid>/action",
         f"/{module.PLUGIN_NAME}/attachments/<sha256>",
     }
@@ -185,6 +186,37 @@ def test_plugin_entry_registers_page_and_defaults_to_deny(monkeypatch, tmp_path:
         unified_msg_origin="default:FriendMessage:10001",
     )
     assert plugin._should_process(event) is False
+
+
+def test_page_edit_endpoint_validates_and_saves_archive(monkeypatch, tmp_path: Path) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    plugin = module.KaoyanArchivePlugin(
+        _FakeContext(), _Config(subjects=["数学", "操作系统"])
+    )
+    captured = {}
+
+    async def request_json(default=None):
+        return {
+            "subject": "操作系统",
+            "title": "修改后的标题",
+            "overview": "修改后的概览",
+            "knowledge_points": ["知识点一", "知识点二"],
+            "summary": "## 修改后的总结",
+        }
+
+    async def update_question_archive(**kwargs):
+        captured.update(kwargs)
+        return {"uuid": kwargs["question_uuid"], "title": kwargs["title"]}
+
+    module.request.json = request_json
+    plugin.store.update_question_archive = update_question_archive
+    result = asyncio.run(plugin.web_question_edit("question-uuid"))
+
+    assert result["saved"] is True
+    assert captured["question_uuid"] == "question-uuid"
+    assert captured["subject"] == "操作系统"
+    assert captured["editor"] == "tester"
+    assert captured["knowledge_points"] == ["知识点一", "知识点二"]
 
 
 def test_authenticated_image_preview_is_content_addressed_and_path_safe(
