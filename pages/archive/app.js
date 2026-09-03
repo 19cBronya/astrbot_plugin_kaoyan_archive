@@ -185,6 +185,7 @@ function renderDetail(detail) {
     badge(dateTime(detail.archived_at || detail.created_at)),
   );
   if (detail.analysis_warning) meta.append(badge(detail.analysis_warning, "warn"));
+  if (detail.error) meta.append(badge(detail.error, "error"));
   if (detail.revision_count) meta.append(badge(`已修订 ${detail.revision_count} 次`));
 
   const timeline = $("detail-timeline");
@@ -218,9 +219,10 @@ function renderDetailActions(detail) {
   actions.replaceChildren();
   if (detail.status === "ARCHIVED" && !detail.deleted_at) {
     actions.append(actionButton("编辑归档", "secondary", beginEdit));
+    actions.append(actionButton("重新归档", "primary", () => actOnQuestion("rearchive")));
   }
   if (detail.status === "FINALIZE_FAILED") {
-    actions.append(actionButton("重新整理", "primary", () => actOnQuestion("retry")));
+    actions.append(actionButton("重试归档", "primary", () => actOnQuestion("rearchive")));
   }
   if (detail.deleted_at) {
     actions.append(actionButton("恢复题目", "primary", () => actOnQuestion("restore")));
@@ -496,9 +498,12 @@ async function openDetail(uuid) {
 async function actOnQuestion(action) {
   if (!state.active) return;
   if (action === "delete" && !window.confirm(`确认软删除 ${state.active.public_id || "这道题"}？原始记录仍会保留。`)) return;
+  if (action === "rearchive" && !window.confirm(
+    `确认重新归档 ${state.active.public_id || "这道题"}？将使用原始会话再次调用整理模型；成功后替换展示内容并保留旧版本。`
+  )) return;
   try {
     await apiPost(`questions/${encodeURIComponent(state.active.uuid)}/action`, { action });
-    toast(action === "retry" ? "已提交重新整理" : "操作成功");
+    toast(action === "rearchive" ? "已提交重新归档" : "操作成功");
     closeDetail();
     await Promise.all([loadOverview(), loadQuestions()]);
   } catch (error) {

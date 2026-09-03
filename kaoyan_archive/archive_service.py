@@ -56,6 +56,7 @@ class ArchiveService:
         source = await self.store.question_source(question_uuid)
         if not source or not source.get("events"):
             raise ValueError("question interval has no effective events")
+        is_rearchive = bool(source.get("public_id"))
 
         subjects = self._subjects()
         transcript = self._transcript(source["events"])
@@ -99,6 +100,11 @@ class ArchiveService:
                         f"模型已降级：{format_provider_failures(failures)}",
                     )
             except ProviderFallbackExhausted as exc:
+                if is_rearchive:
+                    raise RuntimeError(
+                        "重新归档的所有模型均失败，原归档内容已保留："
+                        f"{str(exc)[:700]}"
+                    ) from exc
                 provider_id = "local"
                 extra = f"所有整理模型均失败，已使用本地规则：{str(exc)[:700]}"
                 warning = f"{warning}；{extra}".strip("；")

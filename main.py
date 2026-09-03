@@ -24,7 +24,7 @@ from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.6.0"
+PLUGIN_VERSION = "0.7.0"
 INLINE_IMAGE_MIME_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"}
 )
@@ -518,8 +518,8 @@ class KaoyanArchivePlugin(Star):
             changed = await self.store.soft_delete_question(question_uuid, True)
         elif action == "restore":
             changed = await self.store.soft_delete_question(question_uuid, False)
-        elif action == "retry":
-            changed = await self.store.retry_question_by_uuid(question_uuid)
+        elif action in {"retry", "rearchive"}:
+            changed = await self.store.rearchive_question_by_uuid(question_uuid)
             if changed:
                 self._schedule_archive(question_uuid, notify=False)
         else:

@@ -605,6 +605,7 @@ class ArchiveStore:
                 db.rollback()
                 raise ValueError("question not found")
             public_id = question["public_id"]
+            is_rearchive = bool(public_id)
             if not public_id:
                 counter = db.execute(
                     "SELECT next_value FROM subject_counters WHERE subject=?",
@@ -626,6 +627,29 @@ class ArchiveStore:
             cleaned_overview = re.sub(r"\s+", " ", overview).strip()[:300]
             if not cleaned_overview:
                 cleaned_overview = self._overview_from_text(summary, title)
+            cleaned_title = title.strip()[:200]
+            cleaned_summary = summary.strip()
+            cleaned_points_json = canonical_json(
+                [
+                    str(item).strip()[:100]
+                    for item in knowledge_points
+                    if str(item).strip()
+                ][:20]
+            )
+            if is_rearchive and self._archive_values_changed(
+                question,
+                subject=subject,
+                title=cleaned_title,
+                overview=cleaned_overview,
+                summary=cleaned_summary,
+                knowledge_points_json=cleaned_points_json,
+            ):
+                self._insert_revision(
+                    db,
+                    question,
+                    editor="automatic-rearchive",
+                    created_at=now,
+                )
             db.execute(
                 """
                 UPDATE questions
@@ -638,12 +662,10 @@ class ArchiveStore:
                 (
                     public_id,
                     subject,
-                    title.strip()[:200],
+                    cleaned_title,
                     cleaned_overview,
-                    summary.strip(),
-                    canonical_json(
-                        [str(item).strip()[:100] for item in knowledge_points if str(item).strip()][:20]
-                    ),
+                    cleaned_summary,
+                    cleaned_points_json,
                     provider_id,
                     model_id,
                     prompt_version,
@@ -740,7 +762,32 @@ class ArchiveStore:
             self._retry_row(db, question_uuid)
             return True
 
-    def _retry_row(self, db: sqlite3.Connection, question_uuid: str) -> None:
+    async def rearchive_question_by_uuid(self, question_uuid: str) -> bool:
+        return self._rearchive_question_by_uuid_sync(question_uuid)
+
+    def _rearchive_question_by_uuid_sync(self, question_uuid: str) -> bool:
+        """Queue a failed or completed archive again without touching raw events."""
+        with self._lock, self._connect() as db:
+            row = db.execute(
+                "SELECT status,deleted_at FROM questions WHERE uuid=?",
+                (question_uuid,),
+            ).fetchone()
+            if (
+                not row
+                or row["deleted_at"] is not None
+                or row["status"] not in {"ARCHIVED", "FINALIZE_FAILED"}
+            ):
+                return False
+            self._retry_row(db, question_uuid, audit_action="rearchive")
+            return True
+
+    def _retry_row(
+        self,
+        db: sqlite3.Connection,
+        question_uuid: str,
+        *,
+        audit_action: str = "retry",
+    ) -> None:
         now = utc_timestamp()
         db.execute(
             "UPDATE questions SET status='FINALIZING',error='' WHERE uuid=?",
@@ -754,7 +801,7 @@ class ArchiveStore:
             """,
             (question_uuid, now, now),
         )
-        self._audit(db, "retry", "question", question_uuid, {})
+        self._audit(db, audit_action, "question", question_uuid, {})
 
     async def latest_question(self, umo: str) -> dict[str, Any] | None:
         return self._latest_question_sync(umo)
@@ -993,34 +1040,12 @@ class ArchiveStore:
             ):
                 db.rollback()
                 return self._question_dict(current)
-            revision = int(
-                db.execute(
-                    """
-                    SELECT COALESCE(MAX(revision), 0) + 1 AS value
-                    FROM question_revisions WHERE question_uuid=?
-                    """,
-                    (question_uuid,),
-                ).fetchone()["value"]
-            )
             now = utc_timestamp()
-            db.execute(
-                """
-                INSERT INTO question_revisions(
-                    question_uuid,revision,subject,title,overview,summary,
-                    knowledge_points_json,editor,created_at
-                ) VALUES(?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    question_uuid,
-                    revision,
-                    current["subject"],
-                    current["title"],
-                    current["overview"],
-                    current["summary"],
-                    current["knowledge_points_json"],
-                    editor[:100],
-                    now,
-                ),
+            revision = self._insert_revision(
+                db,
+                current,
+                editor=editor,
+                created_at=now,
             )
             db.execute(
                 """
@@ -1053,6 +1078,65 @@ class ArchiveStore:
                 "SELECT * FROM questions WHERE uuid=?", (question_uuid,)
             ).fetchone()
             return self._question_dict(updated)
+
+    @staticmethod
+    def _archive_values_changed(
+        current: sqlite3.Row,
+        *,
+        subject: str,
+        title: str,
+        overview: str,
+        summary: str,
+        knowledge_points_json: str,
+    ) -> bool:
+        return any(
+            (
+                current["subject"] != subject,
+                current["title"] != title,
+                current["overview"] != overview,
+                current["summary"] != summary,
+                current["knowledge_points_json"] != knowledge_points_json,
+            )
+        )
+
+    @staticmethod
+    def _insert_revision(
+        db: sqlite3.Connection,
+        current: sqlite3.Row,
+        *,
+        editor: str,
+        created_at: float,
+    ) -> int:
+        question_uuid = str(current["uuid"])
+        revision = int(
+            db.execute(
+                """
+                SELECT COALESCE(MAX(revision), 0) + 1 AS value
+                FROM question_revisions WHERE question_uuid=?
+                """,
+                (question_uuid,),
+            ).fetchone()["value"]
+        )
+        db.execute(
+            """
+            INSERT INTO question_revisions(
+                question_uuid,revision,subject,title,overview,summary,
+                knowledge_points_json,editor,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                question_uuid,
+                revision,
+                current["subject"],
+                current["title"],
+                current["overview"],
+                current["summary"],
+                current["knowledge_points_json"],
+                editor[:100],
+                created_at,
+            ),
+        )
+        return revision
 
     async def soft_delete_question(self, question_uuid: str, deleted: bool) -> bool:
         return self._soft_delete_question_sync(question_uuid, deleted)

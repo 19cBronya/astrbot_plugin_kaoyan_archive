@@ -220,3 +220,51 @@ def test_archive_uses_local_rules_when_all_providers_fail(tmp_path: Path) -> Non
         "backup-provider",
         "umo-provider",
     ]
+
+
+def test_failed_rearchive_preserves_existing_archive(tmp_path: Path) -> None:
+    async def scenario():
+        store = ArchiveStore(tmp_path / "archive.sqlite3")
+        await store.initialize()
+        question_uuid = await build_question(store)
+        initial_service = ArchiveService(
+            context=NoLLMContext(),
+            config={
+                "enable_ai_archive": False,
+                "subjects": ["操作系统", "其他"],
+                "max_archive_chars": 30000,
+            },
+            store=store,
+            plugin_version="test",
+        )
+        initial = await initial_service.finalize(question_uuid)
+        assert await store.rearchive_question_by_uuid(question_uuid)
+
+        retry_service = ArchiveService(
+            context=AllFailLLMContext(),
+            config={
+                "enable_ai_archive": True,
+                "archive_provider_id": "primary-archive",
+                "fallback_provider_id": "backup-provider",
+                "subjects": ["操作系统", "其他"],
+                "max_archive_chars": 30000,
+            },
+            store=store,
+            plugin_version="test",
+        )
+        try:
+            await retry_service.finalize(question_uuid)
+        except RuntimeError as exc:
+            await store.fail_question(question_uuid, str(exc))
+        else:
+            raise AssertionError("rearchive unexpectedly succeeded")
+        return initial, await store.question_detail(question_uuid)
+
+    initial, detail = asyncio.run(scenario())
+
+    assert detail["status"] == "FINALIZE_FAILED"
+    assert detail["public_id"] == initial.public_id
+    assert detail["title"] == initial.title
+    assert detail["summary"] == initial.summary
+    assert detail["revision_count"] == 0
+    assert "原归档内容已保留" in detail["error"]

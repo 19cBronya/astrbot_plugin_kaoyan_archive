@@ -219,6 +219,30 @@ def test_page_edit_endpoint_validates_and_saves_archive(monkeypatch, tmp_path: P
     assert captured["knowledge_points"] == ["知识点一", "知识点二"]
 
 
+def test_page_rearchive_action_queues_existing_question(monkeypatch, tmp_path: Path) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    plugin = module.KaoyanArchivePlugin(_FakeContext(), _Config())
+    scheduled = []
+
+    async def request_json(default=None):
+        return {"action": "rearchive"}
+
+    async def rearchive_question(question_uuid):
+        assert question_uuid == "question-uuid"
+        return True
+
+    module.request.json = request_json
+    plugin.store.rearchive_question_by_uuid = rearchive_question
+    plugin._schedule_archive = lambda question_uuid, notify: scheduled.append(
+        (question_uuid, notify)
+    )
+
+    result = asyncio.run(plugin.web_question_action("question-uuid"))
+
+    assert result == {"saved": True, "action": "rearchive"}
+    assert scheduled == [("question-uuid", False)]
+
+
 def test_authenticated_image_preview_is_content_addressed_and_path_safe(
     monkeypatch, tmp_path: Path
 ) -> None:

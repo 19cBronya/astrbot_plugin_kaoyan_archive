@@ -384,3 +384,80 @@ def test_edit_archive_saves_append_only_revision_and_preserves_events(tmp_path: 
             assert "append-only" in str(exc)
         else:
             raise AssertionError("revision update unexpectedly succeeded")
+
+
+def test_rearchive_replaces_derived_data_and_saves_old_revision(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    umo = "default:FriendMessage:rearchive"
+    add_event(store, umo=umo, direction="user", text="什么是极限？")
+    boundary_id = add_event(
+        store,
+        umo=umo,
+        direction="user",
+        text="我问完了",
+        body_text="",
+        boundary=True,
+    )
+    question = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=boundary_id)
+    )
+    assert question
+    asyncio.run(store.claim_job(question["uuid"]))
+    asyncio.run(
+        store.complete_question(
+            question_uuid=question["uuid"],
+            subject="数学",
+            title="旧标题",
+            overview="旧概览",
+            summary="## 旧总结",
+            knowledge_points=["旧知识点"],
+            provider_id="local",
+            model_id="local-rules",
+            prompt_version="old",
+        )
+    )
+
+    assert asyncio.run(store.rearchive_question_by_uuid(question["uuid"]))
+    assert asyncio.run(store.claim_job(question["uuid"]))
+    asyncio.run(
+        store.complete_question(
+            question_uuid=question["uuid"],
+            subject="数学",
+            title="新标题",
+            overview="新概览",
+            summary="## 新总结",
+            knowledge_points=["极限"],
+            provider_id="archive-provider",
+            model_id="archive-model",
+            prompt_version="new",
+        )
+    )
+    detail = asyncio.run(store.question_detail(question["uuid"]))
+
+    assert detail and detail["status"] == "ARCHIVED"
+    assert detail["title"] == "新标题"
+    assert detail["revision_count"] == 1
+    with sqlite3.connect(store.db_path) as db:
+        db.row_factory = sqlite3.Row
+        revision = db.execute(
+            "SELECT * FROM question_revisions WHERE question_uuid=?",
+            (question["uuid"],),
+        ).fetchone()
+    assert revision is not None
+    assert revision["title"] == "旧标题"
+    assert revision["summary"] == "## 旧总结"
+    assert revision["editor"] == "automatic-rearchive"
+
+
+def test_rearchive_rejects_deleted_or_running_question(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    umo = "default:FriendMessage:rearchive-guard"
+    add_event(store, umo=umo, direction="user", text="问题")
+    boundary_id = add_event(
+        store, umo=umo, direction="user", text="问完", body_text="", boundary=True
+    )
+    question = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=boundary_id)
+    )
+    assert question
+    assert not asyncio.run(store.rearchive_question_by_uuid(question["uuid"]))
