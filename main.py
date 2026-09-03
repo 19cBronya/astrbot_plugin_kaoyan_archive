@@ -25,7 +25,7 @@ from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.8.1"
+PLUGIN_VERSION = "0.8.2"
 INLINE_IMAGE_MIME_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"}
 )
@@ -528,6 +528,12 @@ class KaoyanArchivePlugin(Star):
             return error_response("unsupported action", status_code=400)
         if not changed:
             return error_response("question not found", status_code=404)
+        logger.info(
+            "归档页面题目操作 user=%s action=%s question=%s",
+            str(request.username or "dashboard"),
+            action,
+            question_uuid,
+        )
         return json_response({"saved": True, "action": action})
 
     def _should_process(self, event: AstrMessageEvent) -> bool:

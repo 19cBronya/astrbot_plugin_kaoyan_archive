@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.2
+
+- 修复 AstrBot Plugin Page iframe 禁止原生浏览器模态框时，“重新归档”和“软删除”点击后无响应的问题。
+- 改用页面内确认对话框，并在提交期间禁用操作按钮，避免重复请求。
+- 后端为成功接收的页面题目操作增加 INFO 日志，便于确认重归档是否已入队。
+
 ## v0.8.1
 
 - 备用 LLM 列表接入 AstrBot Dashboard 的现有 Provider 多选器，无需手工输入 Provider ID。

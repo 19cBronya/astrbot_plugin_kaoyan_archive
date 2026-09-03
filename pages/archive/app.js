@@ -24,6 +24,7 @@ const previewableImageTypes = new Set([
 
 const $ = (id) => document.getElementById(id);
 const connection = $("connection");
+let pendingConfirmation = null;
 
 function dateTime(value) {
   if (!value) return "—";
@@ -495,18 +496,43 @@ async function openDetail(uuid) {
   }
 }
 
+function confirmAction(message, submitLabel = "确认") {
+  if (pendingConfirmation) pendingConfirmation(false);
+  $("confirm-message").textContent = message;
+  $("confirm-submit").textContent = submitLabel;
+  $("confirm-overlay").classList.remove("hidden");
+  return new Promise((resolve) => {
+    pendingConfirmation = resolve;
+    $("confirm-submit").focus();
+  });
+}
+
+function settleConfirmation(confirmed) {
+  $("confirm-overlay").classList.add("hidden");
+  const resolve = pendingConfirmation;
+  pendingConfirmation = null;
+  if (resolve) resolve(confirmed);
+}
+
 async function actOnQuestion(action) {
   if (!state.active) return;
-  if (action === "delete" && !window.confirm(`确认软删除 ${state.active.public_id || "这道题"}？原始记录仍会保留。`)) return;
-  if (action === "rearchive" && !window.confirm(
-    `确认重新归档 ${state.active.public_id || "这道题"}？将使用原始会话再次调用整理模型；成功后替换展示内容并保留旧版本。`
+  if (action === "delete" && !await confirmAction(
+    `确认软删除 ${state.active.public_id || "这道题"}？原始记录仍会保留。`,
+    "确认删除",
   )) return;
+  if (action === "rearchive" && !await confirmAction(
+    `确认重新归档 ${state.active.public_id || "这道题"}？将使用原始会话再次调用整理模型；成功后替换展示内容并保留旧版本。`,
+    "开始归档",
+  )) return;
+  const actionButtons = [...$("detail-actions").querySelectorAll("button")];
+  actionButtons.forEach((button) => { button.disabled = true; });
   try {
     await apiPost(`questions/${encodeURIComponent(state.active.uuid)}/action`, { action });
     toast(action === "rearchive" ? "已提交重新归档" : "操作成功");
     closeDetail();
     await Promise.all([loadOverview(), loadQuestions()]);
   } catch (error) {
+    actionButtons.forEach((button) => { button.disabled = false; });
     toast(error.message || "操作失败", true);
   }
 }
@@ -528,11 +554,21 @@ function closeDetail() {
   document.body.classList.remove("dialog-open");
 }
 $("close-detail").addEventListener("click", closeDetail);
+$("confirm-cancel").addEventListener("click", () => settleConfirmation(false));
+$("confirm-submit").addEventListener("click", () => settleConfirmation(true));
+$("confirm-overlay").addEventListener("click", (event) => {
+  if (event.target === $("confirm-overlay")) settleConfirmation(false);
+});
 $("detail-overlay").addEventListener("click", (event) => {
   if (event.target === $("detail-overlay")) closeDetail();
 });
 window.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeDetail();
+  if (event.key !== "Escape") return;
+  if (!$("confirm-overlay").classList.contains("hidden")) {
+    settleConfirmation(false);
+  } else {
+    closeDetail();
+  }
 });
 
 await bridge.ready();

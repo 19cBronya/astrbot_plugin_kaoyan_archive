@@ -22,6 +22,15 @@ def test_katex_is_loaded_only_from_local_page_assets() -> None:
     assert (KATEX / "LICENSE").is_file()
 
 
+def test_page_uses_iframe_safe_confirmation_dialog() -> None:
+    document = (PAGE / "index.html").read_text(encoding="utf-8")
+    script = (PAGE / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="confirm-overlay"' in document
+    assert "confirmAction(" in script
+    assert "window.confirm" not in script
+
+
 def test_all_katex_fonts_referenced_by_css_are_vendored() -> None:
     stylesheet = (KATEX / "katex.min.css").read_text(encoding="utf-8")
     font_paths = set(re.findall(r"url\((fonts/[^)]+)\)", stylesheet))
