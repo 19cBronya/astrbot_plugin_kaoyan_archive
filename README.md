@@ -43,7 +43,7 @@ default:FriendMessage:123456789
 | `enabled` | `true` | 总开关 |
 | `umo_whitelist` | `[]` | 精确私聊 UMO 白名单 |
 | `classification_provider_id` | 空 | 逐消息分类模型；空值表示沿用该 UMO 当前 Provider |
-| `fallback_provider_id` | 空 | 分类或归档专用模型失败后尝试的备用模型；仍失败时退回 UMO 当前 Provider |
+| `fallback_provider_ids` | `[]` | 有序备用模型列表；全部失败后再尝试 UMO 当前 Provider |
 | `subjects` | 数学、英语、政治、408 各科等 | 科目目录 |
 | `enable_ai_archive` | `true` | 边界建立后再调用模型生成归档摘要 |
 | `archive_provider_id` | 空 | 归档整理模型；空值表示沿用该 UMO 当前 Provider |
@@ -77,7 +77,7 @@ default:FriendMessage:123456789
 
 因此，一轮普通问答会包含 AstrBot 原本的答疑调用和插件新增的一次分类调用；结束归档时还可能增加一次归档整理调用。
 
-分类和归档调用均按“操作专用 Provider → `fallback_provider_id` → UMO 当前 Provider”的顺序尝试，并自动跳过空值和重复 Provider。分类链全部失败时按本地安全规则保留原文；归档链全部失败时仍使用本地规则生成题号、标题和摘要。
+分类和归档调用均按“操作专用 Provider → `fallback_provider_ids` 中的全部备用 Provider（从上到下）→ UMO 当前 Provider”的顺序尝试，并自动跳过空值和重复 Provider。旧版单值 `fallback_provider_id` 仍会被读取，并排在新列表之后，升级无需立即迁移。分类链全部失败时按本地安全规则保留原文；首次归档链全部失败时仍使用本地规则生成题号、标题和摘要，重新归档失败时则保留既有结果。
 
 ## AstrBot 注册命令
 

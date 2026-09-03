@@ -153,7 +153,7 @@ def test_classifier_uses_backup_before_umo_provider() -> None:
         context=context,
         config={
             "classification_provider_id": "primary-classifier",
-            "fallback_provider_id": "backup-provider",
+            "fallback_provider_ids": ["backup-provider"],
         },
     )
 
@@ -175,11 +175,12 @@ def test_classifier_uses_backup_before_umo_provider() -> None:
     assert "primary unavailable" in result.warning
 
 
-def test_classifier_falls_back_to_umo_after_two_failures() -> None:
+def test_classifier_falls_back_to_umo_after_all_backup_failures() -> None:
     context = FakeContext(
         [
             RuntimeError("primary unavailable"),
-            RuntimeError("backup unavailable"),
+            RuntimeError("backup one unavailable"),
+            RuntimeError("backup two unavailable"),
             '{"kind":"archive","content":"","intent":"finish","confidence":1}',
         ]
     )
@@ -187,7 +188,7 @@ def test_classifier_falls_back_to_umo_after_two_failures() -> None:
         context=context,
         config={
             "classification_provider_id": "primary-classifier",
-            "fallback_provider_id": "backup-provider",
+            "fallback_provider_ids": ["backup-one", "backup-two"],
         },
     )
 
@@ -203,7 +204,8 @@ def test_classifier_falls_back_to_umo_after_two_failures() -> None:
     assert result.provider_id == "classifier-provider"
     assert [call["chat_provider_id"] for call in context.calls] == [
         "primary-classifier",
-        "backup-provider",
+        "backup-one",
+        "backup-two",
         "classifier-provider",
     ]
     assert context.provider_lookups == 1

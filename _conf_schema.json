@@ -18,12 +18,11 @@
     "default": "",
     "_special": "select_provider"
   },
-  "fallback_provider_id": {
-    "type": "string",
-    "description": "备用 LLM Provider",
-    "hint": "逐消息分类或归档专用 Provider 失败时先尝试此模型；留空或调用失败时再退回该 UMO 当前聊天 Provider。",
-    "default": "",
-    "_special": "select_provider"
+  "fallback_provider_ids": {
+    "type": "list",
+    "description": "备用 LLM Provider 列表（按顺序）",
+    "hint": "填写 AstrBot Provider ID。专用 Provider 失败后会从上到下逐一尝试；全部失败或列表为空时，最后尝试该 UMO 当前聊天 Provider。",
+    "default": []
   },
   "subjects": {
     "type": "list",

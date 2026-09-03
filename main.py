@@ -19,12 +19,13 @@ from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 from .kaoyan_archive.analyzer import AnalysisResult, MessageClassifier, MessageKind
 from .kaoyan_archive.archive_service import ArchiveResult, ArchiveService
 from .kaoyan_archive.attachments import AttachmentStore
+from .kaoyan_archive.provider_fallback import configured_fallback_provider_ids
 from .kaoyan_archive.storage import ArchiveStore
 from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.7.0"
+PLUGIN_VERSION = "0.8.0"
 INLINE_IMAGE_MIME_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"}
 )
@@ -64,6 +65,7 @@ class KaoyanArchivePlugin(Star):
         self._register_web_apis()
 
     async def initialize(self) -> None:
+        self._migrate_legacy_fallback_config()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         try:
             self.data_dir.chmod(0o700)
@@ -372,8 +374,8 @@ class KaoyanArchivePlugin(Star):
                     "classification_provider_id": str(
                         self.config.get("classification_provider_id", "") or ""
                     ),
-                    "fallback_provider_id": str(
-                        self.config.get("fallback_provider_id", "") or ""
+                    "fallback_provider_ids": configured_fallback_provider_ids(
+                        self.config
                     ),
                     "framework_commands": list(FRAMEWORK_COMMAND_HELP),
                     "routing_status": self._routing_statuses(),
@@ -607,6 +609,21 @@ class KaoyanArchivePlugin(Star):
         if not isinstance(value, list):
             return []
         return [str(item).strip() for item in value if str(item).strip()]
+
+    def _migrate_legacy_fallback_config(self) -> None:
+        if self._cfg_list("fallback_provider_ids"):
+            return
+        legacy = self.config.get("fallback_provider_id", "")
+        if isinstance(legacy, list):
+            migrated = [str(item).strip() for item in legacy if str(item).strip()]
+        else:
+            migrated = [str(legacy).strip()] if str(legacy).strip() else []
+        if not migrated:
+            return
+        self.config["fallback_provider_ids"] = migrated
+        save_config = getattr(self.config, "save_config", None)
+        if callable(save_config):
+            save_config()
 
     def _cfg_bool(self, key: str, default: bool) -> bool:
         value = self.config.get(key, default)

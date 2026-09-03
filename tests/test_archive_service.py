@@ -156,7 +156,7 @@ def test_archive_uses_backup_before_umo_provider(tmp_path: Path) -> None:
             config={
                 "enable_ai_archive": True,
                 "archive_provider_id": "primary-archive",
-                "fallback_provider_id": "backup-provider",
+                "fallback_provider_ids": ["backup-provider", "backup-two"],
                 "subjects": ["操作系统", "其他"],
                 "max_archive_chars": 30000,
             },
@@ -194,7 +194,7 @@ def test_archive_uses_local_rules_when_all_providers_fail(tmp_path: Path) -> Non
             config={
                 "enable_ai_archive": True,
                 "archive_provider_id": "primary-archive",
-                "fallback_provider_id": "backup-provider",
+                "fallback_provider_ids": ["backup-one", "backup-two"],
                 "subjects": ["操作系统", "其他"],
                 "max_archive_chars": 30000,
             },
@@ -217,7 +217,8 @@ def test_archive_uses_local_rules_when_all_providers_fail(tmp_path: Path) -> Non
     assert "所有整理模型均失败" in result.warning
     assert [call["chat_provider_id"] for call in context.calls] == [
         "primary-archive",
-        "backup-provider",
+        "backup-one",
+        "backup-two",
         "umo-provider",
     ]
 
@@ -245,7 +246,7 @@ def test_failed_rearchive_preserves_existing_archive(tmp_path: Path) -> None:
             config={
                 "enable_ai_archive": True,
                 "archive_provider_id": "primary-archive",
-                "fallback_provider_id": "backup-provider",
+                "fallback_provider_ids": ["backup-one", "backup-two"],
                 "subjects": ["操作系统", "其他"],
                 "max_archive_chars": 30000,
             },

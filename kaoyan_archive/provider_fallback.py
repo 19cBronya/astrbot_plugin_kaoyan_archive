@@ -33,10 +33,10 @@ async def call_with_provider_fallback(
     umo: str,
     operation: Callable[[str], Awaitable[T]],
 ) -> tuple[T, str, list[ProviderFailure]]:
-    """Try operation provider, shared backup, then the UMO's current provider."""
+    """Try operation provider, ordered shared backups, then the UMO provider."""
     configured = [
         str(config.get(primary_key, "") or "").strip(),
-        str(config.get("fallback_provider_id", "") or "").strip(),
+        *configured_fallback_provider_ids(config),
     ]
     attempted: set[str] = set()
     failures: list[ProviderFailure] = []
@@ -67,6 +67,30 @@ async def call_with_provider_fallback(
             failures.append(_failure(current_provider_id, exc))
 
     raise ProviderFallbackExhausted(failures)
+
+
+def configured_fallback_provider_ids(config: Any) -> list[str]:
+    """Return ordered fallback IDs while accepting the pre-v0.8 single value."""
+    values: list[str] = []
+    configured = config.get("fallback_provider_ids", [])
+    if isinstance(configured, list):
+        values.extend(str(item).strip() for item in configured)
+    elif configured:
+        values.append(str(configured).strip())
+
+    legacy = config.get("fallback_provider_id", "")
+    if isinstance(legacy, list):
+        values.extend(str(item).strip() for item in legacy)
+    elif legacy:
+        values.append(str(legacy).strip())
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for provider_id in values:
+        if provider_id and provider_id not in seen:
+            seen.add(provider_id)
+            result.append(provider_id)
+    return result
 
 
 def format_provider_failures(failures: list[ProviderFailure] | tuple[ProviderFailure, ...]) -> str:

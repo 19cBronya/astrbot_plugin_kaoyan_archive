@@ -188,6 +188,16 @@ def test_plugin_entry_registers_page_and_defaults_to_deny(monkeypatch, tmp_path:
     assert plugin._should_process(event) is False
 
 
+def test_initialize_migrates_legacy_fallback_provider(monkeypatch, tmp_path: Path) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    config = _Config(fallback_provider_id="legacy-provider")
+    plugin = module.KaoyanArchivePlugin(_FakeContext(), config)
+
+    asyncio.run(plugin.initialize())
+
+    assert config["fallback_provider_ids"] == ["legacy-provider"]
+
+
 def test_page_edit_endpoint_validates_and_saves_archive(monkeypatch, tmp_path: Path) -> None:
     module = _load_plugin_module(monkeypatch, tmp_path)
     plugin = module.KaoyanArchivePlugin(

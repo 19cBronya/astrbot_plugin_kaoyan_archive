@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.0
+
+- 备用 LLM 配置由单个 Provider 扩展为有序 `fallback_provider_ids` 列表，分类和归档共用该降级链。
+- 调用顺序固定为“专用 Provider → 全部备用 Provider → UMO 当前 Provider”，并跳过空值及重复项。
+- 继续兼容旧版 `fallback_provider_id` 单值配置，升级后无需立即修改现有配置。
+
 ## v0.7.0
 
 - 题目详情页为已归档题目新增“重新归档”，整理失败的题目也可从同一入口再次提交。
