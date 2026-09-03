@@ -325,6 +325,20 @@ class ArchiveStore:
                 ),
             )
 
+    async def attachment_metadata(self, sha256: str) -> dict[str, Any] | None:
+        return self._attachment_metadata_sync(sha256)
+
+    def _attachment_metadata_sync(self, sha256: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as db:
+            row = db.execute(
+                """
+                SELECT sha256,size,mime_type,stored_path
+                FROM attachments WHERE sha256=?
+                """,
+                (sha256,),
+            ).fetchone()
+            return dict(row) if row else None
+
     async def create_question_interval(
         self,
         *,

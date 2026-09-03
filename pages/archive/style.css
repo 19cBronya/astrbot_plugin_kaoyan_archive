@@ -166,6 +166,29 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px c
 .event-head { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 8px; color: var(--muted); font-size: 0.73rem; }
 .event-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
 .attachment { display: inline-flex; margin: 8px 6px 0 0; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font-size: 0.72rem; }
+.attachment-preview { width: min(100%, 780px); margin: 12px 0 2px; }
+.attachment-image-frame {
+  display: grid;
+  width: 100%;
+  min-height: 120px;
+  padding: 10px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  color: var(--muted);
+  background:
+    linear-gradient(45deg, color-mix(in srgb, var(--line) 28%, transparent) 25%, transparent 25%) 0 0 / 18px 18px,
+    linear-gradient(-45deg, color-mix(in srgb, var(--line) 28%, transparent) 25%, transparent 25%) 0 9px / 18px 18px,
+    var(--surface-strong);
+  cursor: zoom-in;
+}
+.attachment-image { display: block; max-width: 100%; max-height: 520px; border-radius: 8px; object-fit: contain; }
+.attachment-preview.expanded .attachment-image { max-height: none; }
+.attachment-preview.expanded .attachment-image-frame { cursor: zoom-out; }
+.attachment-preview figcaption { margin-top: 7px; color: var(--muted); font-size: 0.72rem; overflow-wrap: anywhere; }
+.attachment-loading { padding: 24px; font-size: 0.8rem; }
+.attachment-loading.error { color: var(--danger); }
 .detail-actions { position: sticky; bottom: -28px; justify-content: flex-end; margin: 30px -28px -28px; padding: 16px 28px; border-top: 1px solid var(--line); background: var(--surface-strong); }
 
 .toast { position: fixed; left: 50%; bottom: 26px; z-index: 50; transform: translateX(-50%); max-width: min(520px, calc(100% - 30px)); padding: 12px 16px; border-radius: 12px; color: white; background: #17201d; box-shadow: var(--shadow); }

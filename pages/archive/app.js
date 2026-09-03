@@ -12,6 +12,14 @@ const state = {
   questions: [],
   active: null,
 };
+const imagePreviewCache = new Map();
+const previewableImageTypes = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+]);
 
 const $ = (id) => document.getElementById(id);
 const connection = $("connection");
@@ -186,10 +194,7 @@ function renderDetail(detail) {
     body.textContent = event.text || (event.attachments?.length ? "[附件消息]" : "");
     item.append(head, body);
     for (const attachment of event.attachments || []) {
-      const tag = document.createElement("span");
-      tag.className = "attachment";
-      tag.textContent = `${attachment.name} · ${Math.ceil((attachment.size || 0) / 1024)} KiB`;
-      item.append(tag);
+      item.append(renderAttachment(attachment));
     }
     timeline.append(item);
   }
@@ -206,6 +211,67 @@ function renderDetail(detail) {
     actions.append(actionButton("软删除", "danger", () => actOnQuestion("delete")));
   }
   renderMath($("detail-overlay"));
+}
+
+function renderAttachment(attachment) {
+  const mimeType = String(attachment.mime_type || "").toLowerCase();
+  const label = `${attachment.name || "图片附件"} · ${Math.ceil((attachment.size || 0) / 1024)} KiB`;
+  if (!previewableImageTypes.has(mimeType) || !attachment.sha256) {
+    const tag = document.createElement("span");
+    tag.className = "attachment";
+    tag.textContent = label;
+    return tag;
+  }
+
+  const figure = document.createElement("figure");
+  figure.className = "attachment-preview";
+  const frame = document.createElement("button");
+  frame.type = "button";
+  frame.className = "attachment-image-frame";
+  frame.title = "点击切换原图大小";
+  const loading = document.createElement("span");
+  loading.className = "attachment-loading";
+  loading.textContent = "图片加载中…";
+  const image = document.createElement("img");
+  image.className = "attachment-image hidden";
+  image.alt = attachment.name || "题目图片";
+  image.loading = "lazy";
+  image.decoding = "async";
+  const caption = document.createElement("figcaption");
+  caption.textContent = label;
+  frame.append(loading, image);
+  figure.append(frame, caption);
+
+  frame.addEventListener("click", () => figure.classList.toggle("expanded"));
+  loadImagePreview(attachment.sha256)
+    .then((dataUrl) => {
+      image.addEventListener("load", () => {
+        loading.classList.add("hidden");
+        image.classList.remove("hidden");
+      }, { once: true });
+      image.addEventListener("error", () => {
+        loading.textContent = "图片解码失败，已保留附件记录";
+        loading.classList.add("error");
+      }, { once: true });
+      image.src = dataUrl;
+    })
+    .catch((error) => {
+      loading.textContent = `图片加载失败：${error.message || "未知错误"}`;
+      loading.classList.add("error");
+    });
+  return figure;
+}
+
+function loadImagePreview(sha256) {
+  if (!imagePreviewCache.has(sha256)) {
+    const pending = apiGet(`attachments/${encodeURIComponent(sha256)}`).then((result) => {
+      if (!result?.data_url) throw new Error("预览接口未返回图片");
+      return result.data_url;
+    });
+    imagePreviewCache.set(sha256, pending);
+    pending.catch(() => imagePreviewCache.delete(sha256));
+  }
+  return imagePreviewCache.get(sha256);
 }
 
 function knowledgeChip(label) {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -23,7 +24,10 @@ from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.4.0"
+PLUGIN_VERSION = "0.4.1"
+INLINE_IMAGE_MIME_TYPES = frozenset(
+    {"image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"}
+)
 FRAMEWORK_COMMANDS = frozenset({"status", "archive", "retry", "latest"})
 FRAMEWORK_COMMAND_HELP = (
     "/kaoyan status",
@@ -336,6 +340,7 @@ class KaoyanArchivePlugin(Star):
             ("/questions", self.web_questions, ["GET"], "题目列表"),
             ("/questions/<question_uuid>", self.web_question, ["GET"], "题目详情"),
             ("/questions/<question_uuid>/action", self.web_question_action, ["POST"], "题目操作"),
+            ("/attachments/<sha256>", self.web_attachment, ["GET"], "图片附件预览"),
         ]
         for suffix, handler, methods, desc in routes:
             self.context.register_web_api(
@@ -415,6 +420,46 @@ class KaoyanArchivePlugin(Star):
         if not detail:
             return error_response("question not found", status_code=404)
         return json_response(detail)
+
+    async def web_attachment(self, sha256: str):
+        if response := self._require_dashboard_user():
+            return response
+        digest = str(sha256).strip().lower()
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            return error_response("invalid attachment id", status_code=400)
+        attachment = await self.store.attachment_metadata(digest)
+        if not attachment:
+            return error_response("attachment not found", status_code=404)
+        mime_type = str(attachment.get("mime_type") or "").lower()
+        if mime_type not in INLINE_IMAGE_MIME_TYPES:
+            return error_response("attachment is not a previewable image", status_code=415)
+
+        attachment_root = self.attachment_store.root.resolve()
+        try:
+            candidate = self.data_dir / str(attachment.get("stored_path") or "")
+            if candidate.is_symlink():
+                raise ValueError("symlink")
+            resolved = candidate.resolve(strict=True)
+            if not resolved.is_relative_to(attachment_root) or not resolved.is_file():
+                raise ValueError("outside attachment directory")
+            max_bytes = max(1, min(self._cfg_int("max_attachment_mb", 20), 50)) * 1024 * 1024
+            if resolved.stat().st_size > max_bytes:
+                return error_response("image is too large to preview", status_code=413)
+            payload = resolved.read_bytes()
+        except (OSError, ValueError):
+            return error_response("attachment file unavailable", status_code=404)
+        if len(payload) != int(attachment.get("size") or -1):
+            return error_response("attachment integrity check failed", status_code=409)
+        if hashlib.sha256(payload).hexdigest() != digest:
+            return error_response("attachment integrity check failed", status_code=409)
+        encoded = base64.b64encode(payload).decode("ascii")
+        return json_response(
+            {
+                "sha256": digest,
+                "mime_type": mime_type,
+                "data_url": f"data:{mime_type};base64,{encoded}",
+            }
+        )
 
     async def web_question_action(self, question_uuid: str):
         if response := self._require_dashboard_user():

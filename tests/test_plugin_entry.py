@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib.util
+import sqlite3
 import sys
 import types
 from pathlib import Path
@@ -169,19 +171,81 @@ def test_plugin_entry_registers_page_and_defaults_to_deny(monkeypatch, tmp_path:
     context = _FakeContext()
     plugin = module.KaoyanArchivePlugin(context, _Config())
 
-    assert len(context.routes) == 5
+    assert len(context.routes) == 6
     assert {route for route, *_ in context.routes} == {
         f"/{module.PLUGIN_NAME}/stats",
         f"/{module.PLUGIN_NAME}/config",
         f"/{module.PLUGIN_NAME}/questions",
         f"/{module.PLUGIN_NAME}/questions/<question_uuid>",
         f"/{module.PLUGIN_NAME}/questions/<question_uuid>/action",
+        f"/{module.PLUGIN_NAME}/attachments/<sha256>",
     }
     event = SimpleNamespace(
         is_private_chat=lambda: True,
         unified_msg_origin="default:FriendMessage:10001",
     )
     assert plugin._should_process(event) is False
+
+
+def test_authenticated_image_preview_is_content_addressed_and_path_safe(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    plugin = module.KaoyanArchivePlugin(_FakeContext(), _Config())
+    image_bytes = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    source = tmp_path / "pixel.png"
+    source.write_bytes(image_bytes)
+
+    async def prepare():
+        await plugin.initialize()
+        event_id = await plugin.store.add_event(
+            umo="default:FriendMessage:image",
+            direction="user",
+            platform_message_id="image-1",
+            parent_event_id=None,
+            sender_id="user",
+            sender_name="user",
+            kind="question",
+            text="题图",
+            body_text="题图",
+            components=[],
+            raw={},
+            is_command=False,
+            is_boundary=False,
+            boundary_rule="",
+            created_at=1,
+            provider_id="",
+            model_id="",
+            prompt_version="",
+        )
+        captured = plugin.attachment_store._capture_sync(
+            str(source),
+            source.name,
+            "Image",
+        )
+        await plugin.store.link_attachment(event_id, captured)
+        preview = await plugin.web_attachment(captured.sha256)
+        return captured, preview
+
+    captured, preview = asyncio.run(prepare())
+    assert preview["mime_type"] == "image/png"
+    assert base64.b64decode(preview["data_url"].split(",", 1)[1]) == image_bytes
+
+    outside = plugin.data_dir / "outside.png"
+    outside.write_bytes(image_bytes)
+    with sqlite3.connect(plugin.store.db_path) as db:
+        db.execute(
+            "UPDATE attachments SET stored_path='outside.png' WHERE sha256=?",
+            (captured.sha256,),
+        )
+    rejected = asyncio.run(plugin.web_attachment(captured.sha256))
+    assert rejected["status_code"] == 404
+
+    module.request.username = None
+    unauthorized = asyncio.run(plugin.web_attachment(captured.sha256))
+    assert unauthorized["status_code"] == 401
 
 
 def test_plugin_gate_requires_private_and_exact_umo(monkeypatch, tmp_path: Path) -> None:
