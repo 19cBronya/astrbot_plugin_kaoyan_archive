@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import importlib.util
+import json
 import sqlite3
 import sys
 import types
@@ -196,6 +197,16 @@ def test_initialize_migrates_legacy_fallback_provider(monkeypatch, tmp_path: Pat
     asyncio.run(plugin.initialize())
 
     assert config["fallback_provider_ids"] == ["legacy-provider"]
+
+
+def test_fallback_provider_config_uses_astrbot_multi_selector() -> None:
+    schema_path = Path(__file__).parents[1] / "_conf_schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    fallback = schema["fallback_provider_ids"]
+
+    assert fallback["type"] == "list"
+    assert fallback["items"] == {"type": "string"}
+    assert fallback["_special"] == "select_providers"
 
 
 def test_page_edit_endpoint_validates_and_saves_archive(monkeypatch, tmp_path: Path) -> None:

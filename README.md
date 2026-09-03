@@ -43,7 +43,7 @@ default:FriendMessage:123456789
 | `enabled` | `true` | 总开关 |
 | `umo_whitelist` | `[]` | 精确私聊 UMO 白名单 |
 | `classification_provider_id` | 空 | 逐消息分类模型；空值表示沿用该 UMO 当前 Provider |
-| `fallback_provider_ids` | `[]` | 有序备用模型列表；全部失败后再尝试 UMO 当前 Provider |
+| `fallback_provider_ids` | `[]` | 从现有聊天模型中多选并排序；全部失败后再尝试 UMO 当前 Provider |
 | `subjects` | 数学、英语、政治、408 各科等 | 科目目录 |
 | `enable_ai_archive` | `true` | 边界建立后再调用模型生成归档摘要 |
 | `archive_provider_id` | 空 | 归档整理模型；空值表示沿用该 UMO 当前 Provider |

@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.1
+
+- 备用 LLM 列表接入 AstrBot Dashboard 的现有 Provider 多选器，无需手工输入 Provider ID。
+- 选择器支持多选、移除及上下调整顺序，保存顺序即模型降级顺序。
+
 ## v0.8.0
 
 - 备用 LLM 配置由单个 Provider 扩展为有序 `fallback_provider_ids` 列表，分类和归档共用该降级链。

@@ -21,8 +21,10 @@
   "fallback_provider_ids": {
     "type": "list",
     "description": "备用 LLM Provider 列表（按顺序）",
-    "hint": "填写 AstrBot Provider ID。专用 Provider 失败后会从上到下逐一尝试；全部失败或列表为空时，最后尝试该 UMO 当前聊天 Provider。",
-    "default": []
+    "hint": "从现有聊天模型中选择并调整顺序。专用 Provider 失败后会从上到下逐一尝试；全部失败或列表为空时，最后尝试该 UMO 当前聊天 Provider。",
+    "default": [],
+    "items": {"type": "string"},
+    "_special": "select_providers"
   },
   "subjects": {
     "type": "list",
