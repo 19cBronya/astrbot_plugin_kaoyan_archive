@@ -232,7 +232,7 @@ def test_schema_migrates_existing_questions_for_derived_archive_fields(tmp_path:
     with sqlite3.connect(store.db_path) as db:
         db.execute("ALTER TABLE questions DROP COLUMN knowledge_points_json")
         db.execute("ALTER TABLE questions DROP COLUMN overview")
-        db.execute("DELETE FROM schema_migrations WHERE version IN (2,3,4)")
+        db.execute("DELETE FROM schema_migrations WHERE version IN (2,3,4,5)")
 
     asyncio.run(store.initialize())
     detail = asyncio.run(store.question_detail(question["uuid"]))
@@ -246,8 +246,9 @@ def test_schema_migrates_existing_questions_for_derived_archive_fields(tmp_path:
         }
     assert "knowledge_points_json" in columns
     assert "overview" in columns
-    assert 4 in versions
+    assert 5 in versions
     assert "question_revisions" in tables
+    assert {"classification_jobs", "classification_revisions"} <= tables
     assert detail
     assert "资源分配" in detail["overview"]
 
@@ -461,3 +462,98 @@ def test_rearchive_rejects_deleted_or_running_question(tmp_path: Path) -> None:
     )
     assert question
     assert not asyncio.run(store.rearchive_question_by_uuid(question["uuid"]))
+
+
+def test_failed_classification_is_excluded_until_manual_repair(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    umo = "default:FriendMessage:classification-repair"
+    user_id = asyncio.run(
+        store.add_event(
+            umo=umo,
+            direction="user",
+            platform_message_id="pending-user",
+            parent_event_id=None,
+            sender_id="u",
+            sender_name="u",
+            kind="pending_classification",
+            text="解释一下死锁条件",
+            body_text="",
+            components=[],
+            raw={},
+            is_command=False,
+            is_boundary=False,
+            boundary_rule="classifier-failed",
+            created_at=1,
+            provider_id="local",
+            model_id="unclassified",
+            prompt_version="classifier",
+        )
+    )
+    assistant_id = asyncio.run(
+        store.add_event(
+            umo=umo,
+            direction="assistant",
+            platform_message_id="pending-answer",
+            parent_event_id=user_id,
+            sender_id="bot",
+            sender_name="bot",
+            kind="assistant",
+            text="死锁有四个必要条件。",
+            body_text="",
+            components=[],
+            raw={},
+            is_command=False,
+            is_boundary=False,
+            boundary_rule="",
+            created_at=2,
+            provider_id="umo-provider",
+            model_id="umo-model",
+            prompt_version="runtime",
+        )
+    )
+    asyncio.run(store.record_classification_failure(user_id, "provider unavailable"))
+    boundary_id = add_event(
+        store, umo=umo, direction="user", text="我问完了", body_text="", boundary=True
+    )
+    question = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=boundary_id)
+    )
+    assert question and question["status"] == "EMPTY"
+    detail = asyncio.run(store.question_detail(question["uuid"]))
+    assert detail
+    assert [event["relation"] for event in detail["events"]] == [
+        "excluded",
+        "excluded",
+        "boundary",
+    ]
+
+    affected = asyncio.run(
+        store.complete_classification(
+            event_id=user_id,
+            kind="question",
+            body_text="解释一下死锁条件",
+            intent="dashboard-manual-question",
+            confidence=1,
+            provider_id="manual",
+            model_id="dashboard",
+            prompt_version="manual:v1",
+            source="manual",
+            editor="tester",
+        )
+    )
+    assert affected == [question["uuid"]]
+    source = asyncio.run(store.question_source(question["uuid"]))
+    assert source and source["status"] == "FINALIZING"
+    assert [(event["id"], event["body_text"]) for event in source["events"]] == [
+        (user_id, "解释一下死锁条件"),
+        (assistant_id, "死锁有四个必要条件。"),
+    ]
+    stats = asyncio.run(store.stats())
+    assert stats["pending_classifications"] == 0
+
+    with sqlite3.connect(store.db_path) as db:
+        revision = db.execute(
+            "SELECT kind,source,editor FROM classification_revisions WHERE event_id=?",
+            (user_id,),
+        ).fetchone()
+    assert revision == ("question", "manual", "tester")

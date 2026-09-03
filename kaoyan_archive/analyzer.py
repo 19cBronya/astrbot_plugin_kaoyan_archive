@@ -43,6 +43,7 @@ class MessageKind(str, Enum):
     QUESTION = "question"
     ARCHIVE = "archive"
     INSTRUCTION = "instruction"
+    PENDING = "pending_classification"
     EMPTY = "empty"
 
 
@@ -131,16 +132,18 @@ class MessageClassifier:
                 return replace(result, warning=warning)
             return result
         except ProviderFallbackExhausted as exc:
-            body = stripped if stripped else "[附件消息]"
             return AnalysisResult(
-                kind=MessageKind.QUESTION,
-                body_text=body,
-                intent="classifier-fallback",
+                kind=MessageKind.PENDING,
+                body_text="",
+                intent="classifier-failed",
                 confidence=0.0,
                 provider_id="local",
-                model_id="local-rules",
+                model_id="unclassified",
                 prompt_version=self.prompt_version,
-                warning=f"所有分类模型均失败，已按问题保存：{str(exc)[:700]}",
+                warning=(
+                    "所有分类模型均失败，原始消息已保存并进入待分类队列，"
+                    f"不会进入题目正文：{str(exc)[:700]}"
+                ),
             )
 
     @staticmethod
@@ -172,8 +175,8 @@ class MessageClassifier:
             kind = MessageKind(str(value.get("kind") or "").strip().lower())
         except ValueError as exc:
             raise ValueError("classifier returned an unsupported kind") from exc
-        if kind is MessageKind.EMPTY:
-            raise ValueError("classifier cannot return empty")
+        if kind in {MessageKind.EMPTY, MessageKind.PENDING}:
+            raise ValueError("classifier cannot return an internal kind")
 
         intent = re.sub(
             r"[^a-zA-Z0-9_\-\u4e00-\u9fff]",

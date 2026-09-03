@@ -93,7 +93,7 @@ def test_soft_instruction_is_excluded_from_question_body() -> None:
     assert result.intent == "query_history"
 
 
-def test_invalid_classifier_output_falls_back_to_question() -> None:
+def test_invalid_classifier_output_waits_for_repair_without_polluting_question() -> None:
     context = FakeContext(["not-json"])
     classifier = MessageClassifier(context=context, config={})
     result = asyncio.run(
@@ -103,9 +103,10 @@ def test_invalid_classifier_output_falls_back_to_question() -> None:
             has_attachment=False,
         )
     )
-    assert result.kind is MessageKind.QUESTION
-    assert result.body_text == "这条原文不能丢"
-    assert result.intent == "classifier-fallback"
+    assert result.kind is MessageKind.PENDING
+    assert result.body_text == ""
+    assert result.intent == "classifier-failed"
+    assert "不会进入题目正文" in result.warning
     assert "JSONDecodeError" in result.warning
 
 

@@ -39,6 +39,19 @@ def test_image_preview_does_not_lazy_load_while_hidden() -> None:
     assert 'withTimeout(request, 15000, "预览请求超时")' in script
 
 
+def test_page_has_batch_repair_center_and_collapsed_excluded_events() -> None:
+    document = (PAGE / "index.html").read_text(encoding="utf-8")
+    script = (PAGE / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="repair-view"' in document
+    assert 'id="repair-select-all"' in document
+    assert 'id="detail-excluded"' in document
+    assert "pending_classifications" in script
+    assert 'runRepairAction("manual_question")' in script
+    assert 'runRepairAction("manual_instruction")' in script
+    assert 'runRepairAction("manual_archive")' in script
+
+
 def test_all_katex_fonts_referenced_by_css_are_vendored() -> None:
     stylesheet = (KATEX / "katex.min.css").read_text(encoding="utf-8")
     font_paths = set(re.findall(r"url\((fonts/[^)]+)\)", stylesheet))

@@ -13,6 +13,8 @@ const state = {
   questions: [],
   active: null,
   editing: false,
+  repairType: null,
+  repairs: null,
 };
 const imagePreviewCache = new Map();
 const previewableImageTypes = new Set([
@@ -62,21 +64,25 @@ async function apiPost(endpoint, body = {}) {
 function renderStats() {
   const stats = state.stats || {};
   const items = [
-    ["归档题目", stats.questions ?? 0],
-    ["原始事件", stats.events ?? 0],
-    ["归档科目", stats.subjects?.length ?? 0],
-    ["正在整理", stats.finalizing ?? 0],
-    ["整理失败", stats.failed ?? 0],
+    { label: "归档题目", value: stats.questions ?? 0 },
+    { label: "原始事件", value: stats.events ?? 0 },
+    { label: "归档科目", value: stats.subjects?.length ?? 0 },
+    { label: "待分类", value: stats.pending_classifications ?? 0, repair: "classification" },
+    { label: "整理失败", value: stats.failed ?? 0, repair: "archive" },
   ];
   const container = $("stats");
   container.replaceChildren();
-  for (const [label, value] of items) {
-    const card = document.createElement("div");
-    card.className = "stat";
+  for (const item of items) {
+    const card = document.createElement(item.repair ? "button" : "div");
+    card.className = `stat${item.repair ? " actionable" : ""}`;
+    if (item.repair) {
+      card.type = "button";
+      card.addEventListener("click", () => openRepairCenter(item.repair));
+    }
     const caption = document.createElement("span");
-    caption.textContent = label;
+    caption.textContent = item.label;
     const strong = document.createElement("strong");
-    strong.textContent = value;
+    strong.textContent = item.value;
     card.append(caption, strong);
     container.append(card);
   }
@@ -177,7 +183,10 @@ function renderDetail(detail) {
   $("detail-title").textContent = detail.title || "未命名题目";
   renderSummary(detail.summary || detail.error || "暂无总结");
   renderKnowledge(detail);
-  $("detail-event-count").textContent = `${detail.events?.length || 0} 条`;
+  const events = detail.events || [];
+  const excluded = events.filter((event) => relationParts(event.relation).includes("excluded"));
+  const visible = events.filter((event) => !relationParts(event.relation).includes("excluded"));
+  $("detail-event-count").textContent = `${visible.length} 条`;
 
   const meta = $("detail-meta");
   meta.replaceChildren(
@@ -192,28 +201,42 @@ function renderDetail(detail) {
 
   const timeline = $("detail-timeline");
   timeline.replaceChildren();
-  for (const event of detail.events || []) {
-    const item = document.createElement("article");
-    item.className = `event ${event.direction}${String(event.relation).includes("boundary") ? " boundary" : ""}`;
-    const head = document.createElement("div");
-    head.className = "event-head";
-    const who = document.createElement("span");
-    who.textContent = `${event.direction === "user" ? "用户" : event.direction === "assistant" ? "助手" : "控制"} · ${relationLabel(event.relation)}`;
-    const when = document.createElement("span");
-    when.textContent = dateTime(event.created_at);
-    head.append(who, when);
-    const body = document.createElement("p");
-    body.className = "event-body";
-    body.textContent = event.text || (event.attachments?.length ? "[附件消息]" : "");
-    item.append(head, body);
-    for (const attachment of event.attachments || []) {
-      item.append(renderAttachment(attachment));
-    }
-    timeline.append(item);
-  }
+  for (const event of visible) timeline.append(renderTimelineEvent(event));
+
+  const excludedContainer = $("detail-excluded");
+  const excludedTimeline = $("detail-excluded-timeline");
+  excludedTimeline.replaceChildren();
+  excludedContainer.classList.toggle("hidden", excluded.length === 0);
+  excludedContainer.open = false;
+  $("detail-excluded-count").textContent = excluded.length;
+  for (const event of excluded) excludedTimeline.append(renderTimelineEvent(event));
 
   renderDetailActions(detail);
   renderMath($("detail-overlay"));
+}
+
+function relationParts(relation) {
+  return String(relation || "").split(",").filter(Boolean);
+}
+
+function renderTimelineEvent(event) {
+  const item = document.createElement("article");
+  item.className = `event ${event.direction}${relationParts(event.relation).includes("boundary") ? " boundary" : ""}`;
+  const head = document.createElement("div");
+  head.className = "event-head";
+  const who = document.createElement("span");
+  who.textContent = `${event.direction === "user" ? "用户" : event.direction === "assistant" ? "助手" : "控制"} · ${relationLabel(event.relation)}`;
+  const when = document.createElement("span");
+  when.textContent = dateTime(event.created_at);
+  head.append(who, when);
+  const body = document.createElement("p");
+  body.className = "event-body";
+  body.textContent = event.text || (event.attachments?.length ? "[附件消息]" : "");
+  item.append(head, body);
+  for (const attachment of event.attachments || []) {
+    item.append(renderAttachment(attachment));
+  }
+  return item;
 }
 
 function renderDetailActions(detail) {
@@ -465,6 +488,133 @@ function actionButton(label, kind, handler) {
   return button;
 }
 
+async function openRepairCenter(type) {
+  state.repairType = type;
+  $("stats").classList.add("hidden");
+  $("library-view").classList.add("hidden");
+  $("repair-view").classList.remove("hidden");
+  const classification = type === "classification";
+  $("repair-title").textContent = classification ? "待分类消息" : "整理失败题目";
+  $("repair-description").textContent = classification
+    ? "分类模型链路全部失败时，原始消息会停在这里且不进入题目正文。可批量重新调用 AI，或人工明确其用途。"
+    : "这些题目的区间已经建立，但整理模型调用或结果解析失败。可批量重新归档。";
+  $("repair-ai").textContent = classification ? "批量 AI 重试" : "批量重试归档";
+  for (const button of document.querySelectorAll(".classification-action")) {
+    button.classList.toggle("hidden", !classification);
+  }
+  await loadRepairs();
+}
+
+function closeRepairCenter() {
+  state.repairType = null;
+  $("repair-view").classList.add("hidden");
+  $("stats").classList.remove("hidden");
+  $("library-view").classList.remove("hidden");
+}
+
+async function loadRepairs() {
+  try {
+    state.repairs = await apiGet("repairs");
+    renderRepairs();
+  } catch (error) {
+    toast(error.message || "异常列表加载失败", true);
+  }
+}
+
+function renderRepairs() {
+  const classification = state.repairType === "classification";
+  const items = classification
+    ? (state.repairs?.classifications || [])
+    : (state.repairs?.archives || []);
+  const list = $("repair-list");
+  list.replaceChildren();
+  $("empty-repairs").classList.toggle("hidden", items.length > 0);
+  $("repair-select-all").checked = false;
+  for (const entry of items) {
+    const card = document.createElement("article");
+    card.className = "repair-item";
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.className = "repair-checkbox";
+    check.dataset.repairId = String(classification ? entry.event_id : entry.uuid);
+    check.addEventListener("change", updateRepairSelection);
+
+    const content = document.createElement("div");
+    content.className = "repair-content";
+    const title = document.createElement("h3");
+    title.textContent = classification
+      ? (entry.text || (entry.attachment_count ? "[附件消息]" : "[空消息]"))
+      : `${entry.public_id || "未编号"}｜${entry.title || "未命名题目"}`;
+    const meta = document.createElement("div");
+    meta.className = "repair-meta";
+    const values = classification
+      ? [entry.status === "RUNNING" ? "重试中" : "分类失败", entry.umo, `已尝试 ${entry.attempts || 0} 次`, dateTime(entry.created_at)]
+      : [entry.subject || "待分类", entry.umo, `${entry.event_count || 0} 条消息`, dateTime(entry.created_at)];
+    for (const value of values) {
+      const span = document.createElement("span");
+      span.textContent = value;
+      meta.append(span);
+    }
+    const error = document.createElement("p");
+    error.className = "repair-error";
+    error.textContent = entry.error || "未记录具体错误";
+    content.append(title, meta, error);
+    card.append(check, content);
+    list.append(card);
+  }
+  updateRepairSelection();
+}
+
+function selectedRepairIds() {
+  return [...document.querySelectorAll(".repair-checkbox:checked")]
+    .map((input) => input.dataset.repairId);
+}
+
+function updateRepairSelection() {
+  const all = [...document.querySelectorAll(".repair-checkbox")];
+  const selected = selectedRepairIds();
+  $("repair-selected").textContent = `已选择 ${selected.length} 项`;
+  $("repair-select-all").checked = all.length > 0 && selected.length === all.length;
+  $("repair-select-all").indeterminate = selected.length > 0 && selected.length < all.length;
+  for (const button of $("repair-view").querySelectorAll(".repair-actions button")) {
+    button.disabled = selected.length === 0;
+  }
+}
+
+async function runRepairAction(action) {
+  const ids = selectedRepairIds();
+  if (!ids.length) return;
+  const descriptions = {
+    retry_ai: "重新调用分类模型链路",
+    manual_question: "标为题目内容",
+    manual_instruction: "标为指令/无关消息",
+    manual_archive: "标为结束边界",
+    retry_archive: "重新调用整理模型",
+  };
+  if (!await confirmAction(
+    `确认将选中的 ${ids.length} 项${descriptions[action]}？操作会记录修订，不会覆盖原始事件。`,
+    "确认处理",
+  )) return;
+  const buttons = [...$("repair-view").querySelectorAll(".repair-actions button")];
+  buttons.forEach((button) => { button.disabled = true; });
+  try {
+    const result = await apiPost("repairs/action", {
+      target: state.repairType,
+      action,
+      ids,
+    });
+    const failed = result.errors?.length || 0;
+    toast(failed ? `处理完成，${failed} 项失败` : "修复操作已提交", failed > 0);
+    await Promise.all([loadOverview(), loadRepairs(), loadQuestions()]);
+    if (action === "retry_ai" || action === "retry_archive") {
+      window.setTimeout(() => Promise.all([loadOverview(), loadRepairs(), loadQuestions()]), 1200);
+    }
+  } catch (error) {
+    toast(error.message || "修复操作失败", true);
+    updateRepairSelection();
+  }
+}
+
 async function loadOverview() {
   connection.textContent = "正在同步";
   connection.className = "badge muted";
@@ -565,7 +715,24 @@ $("edit-form").addEventListener("submit", (event) => {
 $("filters").addEventListener("change", (event) => {
   if (event.target.matches("select, input[type='checkbox']")) loadQuestions();
 });
-$("refresh").addEventListener("click", () => Promise.all([loadOverview(), loadQuestions()]));
+$("refresh").addEventListener("click", () => {
+  const tasks = [loadOverview(), loadQuestions()];
+  if (state.repairType) tasks.push(loadRepairs());
+  return Promise.all(tasks);
+});
+$("repair-back").addEventListener("click", closeRepairCenter);
+$("repair-select-all").addEventListener("change", (event) => {
+  for (const input of document.querySelectorAll(".repair-checkbox")) {
+    input.checked = event.target.checked;
+  }
+  updateRepairSelection();
+});
+$("repair-ai").addEventListener("click", () => runRepairAction(
+  state.repairType === "classification" ? "retry_ai" : "retry_archive",
+));
+$("repair-question").addEventListener("click", () => runRepairAction("manual_question"));
+$("repair-instruction").addEventListener("click", () => runRepairAction("manual_instruction"));
+$("repair-archive").addEventListener("click", () => runRepairAction("manual_archive"));
 function closeDetail() {
   state.editing = false;
   $("detail-overlay").classList.add("hidden");

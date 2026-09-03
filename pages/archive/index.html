@@ -23,7 +23,7 @@
 
       <section id="stats" class="stats" aria-label="归档总览"></section>
 
-      <section class="panel archive-panel">
+      <section id="library-view" class="panel archive-panel">
         <div class="panel-heading list-heading">
           <div>
             <p class="section-kicker">QUESTION LIBRARY</p>
@@ -66,6 +66,35 @@
         <div id="empty-list" class="empty hidden">
           <div class="empty-icon">∅</div>
           <p>还没有符合条件的题目。</p>
+        </div>
+      </section>
+
+      <section id="repair-view" class="panel archive-panel hidden">
+        <div class="panel-heading repair-heading">
+          <div>
+            <p class="section-kicker">REPAIR CENTER</p>
+            <h2 id="repair-title">异常修复</h2>
+            <p id="repair-description" class="section-description"></p>
+          </div>
+          <button id="repair-back" class="button secondary" type="button">返回题目列表</button>
+        </div>
+        <div class="repair-toolbar">
+          <label class="check-label repair-select-all">
+            <input id="repair-select-all" type="checkbox" />
+            <span>全选</span>
+          </label>
+          <span id="repair-selected" class="muted-text">已选择 0 项</span>
+          <div class="repair-actions">
+            <button id="repair-ai" class="button primary" type="button">批量 AI 重试</button>
+            <button id="repair-question" class="button secondary classification-action" type="button">标为题目内容</button>
+            <button id="repair-instruction" class="button secondary classification-action" type="button">标为指令/无关消息</button>
+            <button id="repair-archive" class="button secondary classification-action" type="button">标为结束边界</button>
+          </div>
+        </div>
+        <div id="repair-list" class="repair-list" aria-live="polite"></div>
+        <div id="empty-repairs" class="empty hidden">
+          <div class="empty-icon">✓</div>
+          <p>当前没有需要修复的条目。</p>
         </div>
       </section>
     </main>
@@ -125,6 +154,11 @@
               <span id="detail-event-count" class="counter"></span>
             </div>
             <div id="detail-timeline" class="timeline"></div>
+            <details id="detail-excluded" class="excluded-events hidden">
+              <summary>已排除消息 <span id="detail-excluded-count" class="counter"></span></summary>
+              <p class="excluded-note">这些原始事件不参与题目整理，仅保留用于审计。</p>
+              <div id="detail-excluded-timeline" class="timeline"></div>
+            </details>
           </section>
         </div>
         <footer id="detail-actions" class="detail-actions"></footer>

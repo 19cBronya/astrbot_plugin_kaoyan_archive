@@ -172,7 +172,7 @@ def test_plugin_entry_registers_page_and_defaults_to_deny(monkeypatch, tmp_path:
     context = _FakeContext()
     plugin = module.KaoyanArchivePlugin(context, _Config())
 
-    assert len(context.routes) == 7
+    assert len(context.routes) == 9
     assert {route for route, *_ in context.routes} == {
         f"/{module.PLUGIN_NAME}/stats",
         f"/{module.PLUGIN_NAME}/config",
@@ -180,6 +180,8 @@ def test_plugin_entry_registers_page_and_defaults_to_deny(monkeypatch, tmp_path:
         f"/{module.PLUGIN_NAME}/questions/<question_uuid>",
         f"/{module.PLUGIN_NAME}/questions/<question_uuid>/edit",
         f"/{module.PLUGIN_NAME}/questions/<question_uuid>/action",
+        f"/{module.PLUGIN_NAME}/repairs",
+        f"/{module.PLUGIN_NAME}/repairs/action",
         f"/{module.PLUGIN_NAME}/attachments/<sha256>",
     }
     event = SimpleNamespace(
@@ -434,6 +436,101 @@ def test_normal_message_is_observed_without_interception(monkeypatch, tmp_path: 
     assert stats["questions"] == 0
     assert extras[f"{module.PLUGIN_NAME}:analysis"]["kind"] == "question"
     assert len(context.llm_calls) == 1
+
+
+def test_classifier_outage_creates_visible_pending_repair(monkeypatch, tmp_path: Path) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    context = _FakeContext()
+
+    async def unavailable(**kwargs):
+        context.llm_calls.append(kwargs)
+        raise RuntimeError("provider unavailable")
+
+    context.llm_generate = unavailable
+    plugin = module.KaoyanArchivePlugin(
+        context,
+        _Config(enabled=True, umo_whitelist=["default:FriendMessage:10001"]),
+    )
+    extras = {}
+    event = SimpleNamespace(
+        is_private_chat=lambda: True,
+        unified_msg_origin="default:FriendMessage:10001",
+        message_str="解释一下死锁条件",
+        message_obj=SimpleNamespace(
+            message_id="pending-message",
+            timestamp=1,
+            raw_message={"message": "解释一下死锁条件"},
+        ),
+        get_messages=lambda: [],
+        get_sender_id=lambda: "10001",
+        get_sender_name=lambda: "student",
+        set_extra=lambda key, value: extras.__setitem__(key, value),
+    )
+
+    asyncio.run(plugin.initialize())
+    asyncio.run(plugin.capture_private_message(event))
+    repairs = asyncio.run(plugin.web_repairs())
+    stats = asyncio.run(plugin.store.stats())
+
+    assert extras[f"{module.PLUGIN_NAME}:analysis"]["kind"] == (
+        "pending_classification"
+    )
+    assert stats["pending_classifications"] == 1
+    assert repairs["classifications"][0]["text"] == "解释一下死锁条件"
+    assert "provider unavailable" in repairs["classifications"][0]["error"]
+
+
+def test_page_can_manually_repair_pending_classification(monkeypatch, tmp_path: Path) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    plugin = module.KaoyanArchivePlugin(_FakeContext(), _Config())
+
+    async def prepare():
+        await plugin.initialize()
+        event_id = await plugin.store.add_event(
+            umo="default:FriendMessage:10001",
+            direction="user",
+            platform_message_id="manual-repair",
+            parent_event_id=None,
+            sender_id="10001",
+            sender_name="student",
+            kind="pending_classification",
+            text="查询昨天的归档",
+            body_text="",
+            components=[],
+            raw={},
+            is_command=False,
+            is_boundary=False,
+            boundary_rule="classifier-failed",
+            created_at=1,
+            provider_id="local",
+            model_id="unclassified",
+            prompt_version="classifier",
+        )
+        await plugin.store.record_classification_failure(event_id, "outage")
+        return event_id
+
+    event_id = asyncio.run(prepare())
+
+    async def request_json(default=None):
+        return {
+            "target": "classification",
+            "action": "manual_instruction",
+            "ids": [str(event_id)],
+        }
+
+    module.request.json = request_json
+    result = asyncio.run(plugin.web_repairs_action())
+    repairs = asyncio.run(plugin.web_repairs())
+
+    assert result["repaired"] == 1
+    assert result["errors"] == []
+    assert repairs["classifications"] == []
+    with sqlite3.connect(plugin.store.db_path) as db:
+        revision = db.execute(
+            "SELECT kind,source,editor FROM classification_revisions WHERE event_id=?",
+            (event_id,),
+        ).fetchone()
+    assert revision == ("instruction", "manual", "tester")
 
 
 def test_registered_framework_command_skips_classifier(monkeypatch, tmp_path: Path) -> None:

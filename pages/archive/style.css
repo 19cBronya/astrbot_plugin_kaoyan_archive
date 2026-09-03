@@ -58,9 +58,11 @@ button, input, select, textarea { font: inherit; }
 }
 
 .stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; margin-bottom: 20px; }
-.stat { padding: 18px 20px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); }
+.stat { padding: 18px 20px; border: 1px solid var(--line); border-radius: 18px; color: var(--text); background: var(--surface); text-align: left; }
 .stat span { display: block; color: var(--muted); font-size: 0.78rem; }
 .stat strong { display: block; margin-top: 5px; font-family: Georgia, serif; font-size: 1.9rem; }
+.stat.actionable { cursor: pointer; transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease; }
+.stat.actionable:hover, .stat.actionable:focus-visible { transform: translateY(-2px); border-color: var(--accent); outline: none; box-shadow: 0 10px 28px color-mix(in srgb, var(--accent) 12%, transparent); }
 
 .archive-panel { padding: 26px; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 18px; }
@@ -143,6 +145,18 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .empty-icon { font-family: Georgia, serif; font-size: 2.4rem; color: var(--line); }
 .hidden { display: none !important; }
 
+.repair-heading { align-items: flex-start; }
+.repair-toolbar { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 16px; background: color-mix(in srgb, var(--bg) 65%, transparent); }
+.repair-select-all { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+.repair-select-all input, .repair-checkbox { width: 17px; min-height: auto; accent-color: var(--accent); }
+.repair-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-left: auto; }
+.repair-list { display: grid; gap: 10px; }
+.repair-item { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px; padding: 18px; border: 1px solid var(--line); border-radius: 15px; background: color-mix(in srgb, var(--surface-strong) 72%, transparent); }
+.repair-checkbox { margin-top: 4px; }
+.repair-content h3 { margin: 0; overflow-wrap: anywhere; font-size: 0.98rem; line-height: 1.55; }
+.repair-meta { display: flex; flex-wrap: wrap; gap: 7px 14px; margin-top: 8px; color: var(--muted); font-size: 0.75rem; }
+.repair-error { margin: 10px 0 0; padding: 9px 11px; border-radius: 9px; color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); font-size: 0.75rem; line-height: 1.55; overflow-wrap: anywhere; }
+
 .overlay { position: fixed; inset: 0; z-index: 30; display: flex; justify-content: flex-end; background: rgba(5, 12, 9, 0.52); backdrop-filter: blur(4px); }
 .detail-drawer { width: min(940px, 100%); height: 100%; padding: 32px; overflow: auto; background: var(--surface-strong); box-shadow: -24px 0 60px rgba(0, 0, 0, 0.22); }
 .detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
@@ -175,6 +189,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .event-body .katex { white-space: normal; }
 .timeline-heading { display: flex; align-items: center; justify-content: space-between; }
 .timeline { display: grid; gap: 12px; }
+.excluded-events { margin-top: 18px; padding: 13px 15px 15px; border: 1px solid var(--line); border-radius: 13px; }
+.excluded-events summary { display: flex; align-items: center; gap: 9px; cursor: pointer; color: var(--muted); font-weight: 700; }
+.excluded-events .counter { min-width: 25px; height: 25px; font-size: 0.72rem; }
+.excluded-note { margin: 10px 0 13px; color: var(--muted); font-size: 0.76rem; }
 .event { position: relative; padding: 14px 16px 14px 18px; border-left: 3px solid var(--line); border-radius: 0 12px 12px 0; background: var(--bg); }
 .event.user { border-left-color: var(--accent); }
 .event.assistant { border-left-color: var(--accent-2); }
@@ -227,6 +245,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
   .stats { grid-template-columns: 1fr 1fr; }
   .archive-panel { padding: 18px; }
   .filters { grid-template-columns: 1fr; }
+  .repair-toolbar { align-items: flex-start; flex-direction: column; }
+  .repair-actions { justify-content: flex-start; margin-left: 0; }
   .search-field { grid-column: auto; }
   .question { grid-template-columns: 1fr; }
   .question-status, .question-arrow { display: none; }

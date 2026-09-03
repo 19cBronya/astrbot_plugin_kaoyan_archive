@@ -25,7 +25,7 @@ from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.8.4"
+PLUGIN_VERSION = "0.9.0"
 INLINE_IMAGE_MIME_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"}
 )
@@ -115,6 +115,11 @@ class KaoyanArchivePlugin(Star):
                     analysis.warning,
                 )
         event_id = await self._persist_user_event(event, analysis)
+        if analysis.kind is MessageKind.PENDING:
+            await self.store.record_classification_failure(
+                event_id,
+                analysis.warning or "所有分类模型均失败",
+            )
         event.set_extra(f"{PLUGIN_NAME}:event_id", event_id)
         event.set_extra(f"{PLUGIN_NAME}:analysis", analysis.as_dict())
         logger.info(
@@ -142,7 +147,11 @@ class KaoyanArchivePlugin(Star):
         analysis_data = event.get_extra(f"{PLUGIN_NAME}:analysis", {}) or {}
         excluded = bool(
             analysis_data.get("kind")
-            in {MessageKind.INSTRUCTION.value, MessageKind.ARCHIVE.value}
+            in {
+                MessageKind.INSTRUCTION.value,
+                MessageKind.ARCHIVE.value,
+                MessageKind.PENDING.value,
+            }
         )
         completion = getattr(resp, "completion_text", "") or ""
         provider_id = await self._safe_current_provider(event.unified_msg_origin)
@@ -184,6 +193,7 @@ class KaoyanArchivePlugin(Star):
         yield event.plain_result(
             "考研归档状态："
             f"事件 {stats['events']} 条，题目 {stats['questions']} 道，"
+            f"待分类 {stats['pending_classifications']} 条，"
             f"处理中 {stats['finalizing']}，失败 {stats['failed']}。"
         )
 
@@ -307,6 +317,7 @@ class KaoyanArchivePlugin(Star):
         return event_id
 
     async def _recover_pending_jobs(self) -> None:
+        await self.store.recover_classification_jobs()
         for question_uuid in await self.store.recover_pending_jobs():
             self._schedule_archive(question_uuid, notify=False)
 
@@ -335,6 +346,113 @@ class KaoyanArchivePlugin(Star):
             logger.exception("归档任务失败 question=%s", question_uuid)
             await self.store.fail_question(question_uuid, str(exc))
 
+    def _schedule_classification_repairs(
+        self, event_ids: list[int], editor: str
+    ) -> None:
+        task = asyncio.create_task(
+            self._run_classification_repairs(event_ids, editor),
+            name=f"kaoyan-classification-repair:{event_ids[0]}:{len(event_ids)}",
+        )
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _run_classification_repairs(
+        self, event_ids: list[int], editor: str
+    ) -> None:
+        for event_id in event_ids:
+            item = await self.store.classification_event(event_id)
+            if not item or not await self.store.claim_classification(event_id):
+                continue
+            try:
+                result = await self.classifier.classify(
+                    umo=str(item["umo"]),
+                    text=str(item["text"] or ""),
+                    has_attachment=bool(item["has_attachment"]),
+                )
+                if result.kind is MessageKind.PENDING:
+                    await self.store.fail_classification(
+                        event_id,
+                        result.warning or "所有分类模型仍不可用",
+                    )
+                    continue
+                await self._apply_classification_repair(
+                    item=item,
+                    result=result,
+                    source="ai_retry",
+                    editor=editor,
+                )
+            except asyncio.CancelledError:
+                await self.store.fail_classification(event_id, "插件停止，重试已中断")
+                raise
+            except Exception as exc:
+                logger.exception("消息分类重试失败 event_id=%s", event_id)
+                await self.store.fail_classification(event_id, str(exc))
+
+    async def _manual_classification_repairs(
+        self,
+        event_ids: list[int],
+        kind: MessageKind,
+        editor: str,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        repaired = 0
+        errors: list[dict[str, Any]] = []
+        for event_id in event_ids:
+            item = await self.store.classification_event(event_id)
+            if not item:
+                errors.append({"id": event_id, "error": "待分类消息不存在或已处理"})
+                continue
+            result = AnalysisResult(
+                kind=kind,
+                body_text=str(item["text"] or "") if kind is MessageKind.QUESTION else "",
+                intent=f"dashboard-manual-{kind.value}",
+                confidence=1.0,
+                provider_id="manual",
+                model_id="dashboard",
+                prompt_version="manual-classification:v1",
+            )
+            try:
+                await self._apply_classification_repair(
+                    item=item,
+                    result=result,
+                    source="manual",
+                    editor=editor,
+                )
+                repaired += 1
+            except Exception as exc:
+                errors.append({"id": event_id, "error": str(exc)[:500]})
+        return repaired, errors
+
+    async def _apply_classification_repair(
+        self,
+        *,
+        item: dict[str, Any],
+        result: AnalysisResult,
+        source: str,
+        editor: str,
+    ) -> None:
+        affected = await self.store.complete_classification(
+            event_id=int(item["id"]),
+            kind=result.kind.value,
+            body_text=result.body_text,
+            intent=result.intent,
+            confidence=result.confidence,
+            provider_id=result.provider_id,
+            model_id=result.model_id,
+            prompt_version=result.prompt_version,
+            source=source,
+            editor=editor,
+            warning=result.warning,
+        )
+        for question_uuid in affected:
+            self._schedule_archive(question_uuid, notify=False)
+        if result.kind is MessageKind.ARCHIVE and not affected:
+            question = await self.store.create_question_interval(
+                umo=str(item["umo"]),
+                boundary_event_id=int(item["id"]),
+            )
+            if question and question["status"] == "FINALIZING":
+                self._schedule_archive(question["uuid"], notify=False)
+
     def _register_web_apis(self) -> None:
         routes = [
             ("/stats", self.web_stats, ["GET"], "归档总览"),
@@ -343,6 +461,8 @@ class KaoyanArchivePlugin(Star):
             ("/questions/<question_uuid>", self.web_question, ["GET"], "题目详情"),
             ("/questions/<question_uuid>/edit", self.web_question_edit, ["POST"], "编辑题目归档"),
             ("/questions/<question_uuid>/action", self.web_question_action, ["POST"], "题目操作"),
+            ("/repairs", self.web_repairs, ["GET"], "异常修复列表"),
+            ("/repairs/action", self.web_repairs_action, ["POST"], "批量修复异常"),
             ("/attachments/<sha256>", self.web_attachment, ["GET"], "图片附件预览"),
         ]
         for suffix, handler, methods, desc in routes:
@@ -415,6 +535,71 @@ class KaoyanArchivePlugin(Star):
             offset=offset,
         )
         return json_response({"items": questions, "limit": limit, "offset": offset})
+
+    async def web_repairs(self):
+        if response := self._require_dashboard_user():
+            return response
+        pending = await self.store.list_pending_classifications(limit=500)
+        failed = await self.store.list_questions(
+            umo="",
+            subject="",
+            status="FINALIZE_FAILED",
+            search="",
+            include_deleted=False,
+            limit=500,
+            offset=0,
+        )
+        return json_response({"classifications": pending, "archives": failed})
+
+    async def web_repairs_action(self):
+        if response := self._require_dashboard_user():
+            return response
+        payload = await request.json(default={})
+        if not isinstance(payload, dict):
+            return error_response("request body must be an object", status_code=400)
+        target = str(payload.get("target") or "")
+        action = str(payload.get("action") or "")
+        raw_ids = payload.get("ids")
+        if not isinstance(raw_ids, list) or not raw_ids or len(raw_ids) > 100:
+            return error_response("ids must contain 1 to 100 items", status_code=400)
+
+        editor = str(request.username or "dashboard")
+        if target == "classification":
+            try:
+                event_ids = sorted({int(item) for item in raw_ids if int(item) > 0})
+            except (TypeError, ValueError):
+                return error_response("invalid event id", status_code=400)
+            if not event_ids:
+                return error_response("invalid event id", status_code=400)
+            if action == "retry_ai":
+                self._schedule_classification_repairs(event_ids, editor)
+                return json_response({"queued": len(event_ids), "action": action})
+            manual_kinds = {
+                "manual_question": MessageKind.QUESTION,
+                "manual_instruction": MessageKind.INSTRUCTION,
+                "manual_archive": MessageKind.ARCHIVE,
+            }
+            kind = manual_kinds.get(action)
+            if kind is None:
+                return error_response("unsupported classification action", status_code=400)
+            repaired, errors = await self._manual_classification_repairs(
+                event_ids, kind, editor
+            )
+            return json_response(
+                {"repaired": repaired, "errors": errors, "action": action}
+            )
+
+        if target == "archive" and action == "retry_archive":
+            question_ids = list(
+                dict.fromkeys(str(item) for item in raw_ids if str(item))
+            )
+            queued = 0
+            for question_uuid in question_ids:
+                if await self.store.rearchive_question_by_uuid(question_uuid):
+                    self._schedule_archive(question_uuid, notify=False)
+                    queued += 1
+            return json_response({"queued": queued, "action": action})
+        return error_response("unsupported repair target or action", status_code=400)
 
     async def web_question(self, question_uuid: str):
         if response := self._require_dashboard_user():

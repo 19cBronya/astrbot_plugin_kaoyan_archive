@@ -12,7 +12,7 @@ from .attachments import CapturedAttachment
 from .utils import canonical_json, utc_timestamp
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class ArchiveStore:
@@ -180,6 +180,47 @@ class ArchiveStore:
                     updated_at REAL NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS classification_jobs (
+                    event_id INTEGER PRIMARY KEY REFERENCES events(id),
+                    status TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    error TEXT NOT NULL DEFAULT '',
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_classification_jobs_status
+                    ON classification_jobs(status, updated_at);
+
+                CREATE TABLE IF NOT EXISTS classification_revisions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id INTEGER NOT NULL REFERENCES events(id),
+                    revision INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    body_text TEXT NOT NULL DEFAULT '',
+                    intent TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0,
+                    provider_id TEXT NOT NULL DEFAULT '',
+                    model_id TEXT NOT NULL DEFAULT '',
+                    prompt_version TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL,
+                    editor TEXT NOT NULL DEFAULT '',
+                    warning TEXT NOT NULL DEFAULT '',
+                    created_at REAL NOT NULL,
+                    UNIQUE(event_id, revision)
+                );
+                CREATE INDEX IF NOT EXISTS idx_classification_revisions_event
+                    ON classification_revisions(event_id, revision DESC);
+                CREATE TRIGGER IF NOT EXISTS classification_revisions_no_update
+                BEFORE UPDATE ON classification_revisions
+                BEGIN
+                    SELECT RAISE(ABORT, 'classification revisions are append-only');
+                END;
+                CREATE TRIGGER IF NOT EXISTS classification_revisions_no_delete
+                BEFORE DELETE ON classification_revisions
+                BEGIN
+                    SELECT RAISE(ABORT, 'classification revisions are append-only');
+                END;
+
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     action TEXT NOT NULL,
@@ -287,6 +328,299 @@ class ArchiveStore:
                 ),
             )
             return int(cursor.lastrowid)
+
+    async def record_classification_failure(self, event_id: int, error: str) -> None:
+        self._record_classification_failure_sync(event_id, error)
+
+    async def recover_classification_jobs(self) -> int:
+        return self._recover_classification_jobs_sync()
+
+    def _recover_classification_jobs_sync(self) -> int:
+        with self._lock, self._connect() as db:
+            cursor = db.execute(
+                """
+                UPDATE classification_jobs
+                SET status='FAILED',error='插件重启，上一次分类重试已中断',updated_at=?
+                WHERE status='RUNNING'
+                """,
+                (utc_timestamp(),),
+            )
+            return int(cursor.rowcount)
+
+    def _record_classification_failure_sync(self, event_id: int, error: str) -> None:
+        with self._lock, self._connect() as db:
+            now = utc_timestamp()
+            db.execute(
+                """
+                INSERT INTO classification_jobs(event_id,status,attempts,error,created_at,updated_at)
+                VALUES(?, 'FAILED', 1, ?, ?, ?)
+                ON CONFLICT(event_id) DO UPDATE SET
+                    status='FAILED',error=excluded.error,updated_at=excluded.updated_at
+                """,
+                (event_id, error[:4000], now, now),
+            )
+            self._audit(
+                db,
+                "classification_failed",
+                "event",
+                str(event_id),
+                {"error": error[:1000]},
+            )
+
+    async def list_pending_classifications(
+        self, *, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        return self._list_pending_classifications_sync(limit)
+
+    def _list_pending_classifications_sync(self, limit: int) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT e.id AS event_id,e.umo,e.text,e.created_at,e.platform_message_id,
+                       cj.status,cj.attempts,cj.error,cj.updated_at,
+                       COUNT(ea.sha256) AS attachment_count
+                FROM classification_jobs cj
+                JOIN events e ON e.id=cj.event_id
+                LEFT JOIN event_attachments ea ON ea.event_id=e.id
+                WHERE cj.status <> 'DONE'
+                GROUP BY e.id
+                ORDER BY e.id DESC LIMIT ?
+                """,
+                (min(max(int(limit), 1), 500),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def classification_event(self, event_id: int) -> dict[str, Any] | None:
+        return self._classification_event_sync(event_id)
+
+    def _classification_event_sync(self, event_id: int) -> dict[str, Any] | None:
+        with self._lock, self._connect() as db:
+            row = db.execute(
+                """
+                SELECT e.*,cj.status,cj.attempts,cj.error,
+                       EXISTS(SELECT 1 FROM event_attachments ea WHERE ea.event_id=e.id)
+                           AS has_attachment
+                FROM classification_jobs cj JOIN events e ON e.id=cj.event_id
+                WHERE e.id=? AND e.direction='user' AND cj.status <> 'DONE'
+                """,
+                (event_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    async def claim_classification(self, event_id: int) -> bool:
+        return self._claim_classification_sync(event_id)
+
+    def _claim_classification_sync(self, event_id: int) -> bool:
+        with self._lock, self._connect() as db:
+            cursor = db.execute(
+                """
+                UPDATE classification_jobs
+                SET status='RUNNING',attempts=attempts+1,error='',updated_at=?
+                WHERE event_id=? AND status IN ('PENDING','FAILED')
+                """,
+                (utc_timestamp(), event_id),
+            )
+            return cursor.rowcount == 1
+
+    async def fail_classification(self, event_id: int, error: str) -> None:
+        self._fail_classification_sync(event_id, error)
+
+    def _fail_classification_sync(self, event_id: int, error: str) -> None:
+        with self._lock, self._connect() as db:
+            db.execute(
+                """
+                UPDATE classification_jobs SET status='FAILED',error=?,updated_at=?
+                WHERE event_id=?
+                """,
+                (error[:4000], utc_timestamp(), event_id),
+            )
+            self._audit(
+                db,
+                "classification_retry_failed",
+                "event",
+                str(event_id),
+                {"error": error[:1000]},
+            )
+
+    async def complete_classification(
+        self,
+        *,
+        event_id: int,
+        kind: str,
+        body_text: str,
+        intent: str,
+        confidence: float,
+        provider_id: str,
+        model_id: str,
+        prompt_version: str,
+        source: str,
+        editor: str,
+        warning: str = "",
+    ) -> list[str]:
+        return self._complete_classification_sync(
+            event_id=event_id,
+            kind=kind,
+            body_text=body_text,
+            intent=intent,
+            confidence=confidence,
+            provider_id=provider_id,
+            model_id=model_id,
+            prompt_version=prompt_version,
+            source=source,
+            editor=editor,
+            warning=warning,
+        )
+
+    def _complete_classification_sync(self, **values: Any) -> list[str]:
+        kind = str(values["kind"])
+        if kind not in {"question", "instruction", "archive"}:
+            raise ValueError("unsupported classification kind")
+        event_id = int(values["event_id"])
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            event = db.execute(
+                "SELECT * FROM events WHERE id=? AND direction='user'", (event_id,)
+            ).fetchone()
+            job = db.execute(
+                "SELECT * FROM classification_jobs WHERE event_id=?", (event_id,)
+            ).fetchone()
+            if not event or not job or job["status"] == "DONE":
+                db.rollback()
+                raise ValueError("classification item is not pending")
+            revision = int(
+                db.execute(
+                    """
+                    SELECT COALESCE(MAX(revision), 0) + 1 AS value
+                    FROM classification_revisions WHERE event_id=?
+                    """,
+                    (event_id,),
+                ).fetchone()["value"]
+            )
+            body_text = str(values.get("body_text") or "")
+            if kind == "question":
+                body_text = str(event["text"] or body_text)
+            elif kind == "instruction":
+                body_text = ""
+            now = utc_timestamp()
+            db.execute(
+                """
+                INSERT INTO classification_revisions(
+                    event_id,revision,kind,body_text,intent,confidence,provider_id,
+                    model_id,prompt_version,source,editor,warning,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    event_id,
+                    revision,
+                    kind,
+                    body_text,
+                    str(values.get("intent") or kind)[:80],
+                    min(max(float(values.get("confidence") or 0), 0), 1),
+                    str(values.get("provider_id") or "")[:200],
+                    str(values.get("model_id") or "")[:200],
+                    str(values.get("prompt_version") or "")[:200],
+                    str(values.get("source") or "manual")[:40],
+                    str(values.get("editor") or "")[:100],
+                    str(values.get("warning") or "")[:1000],
+                    now,
+                ),
+            )
+            db.execute(
+                "UPDATE classification_jobs SET status='DONE',error='',updated_at=? WHERE event_id=?",
+                (now, event_id),
+            )
+            affected = self._reconcile_classification_relations(db, event, kind)
+            self._audit(
+                db,
+                "classification_repaired",
+                "event",
+                str(event_id),
+                {
+                    "revision": revision,
+                    "kind": kind,
+                    "source": str(values.get("source") or "manual")[:40],
+                    "affected_questions": affected,
+                },
+            )
+            db.commit()
+            return affected
+
+    def _reconcile_classification_relations(
+        self, db: sqlite3.Connection, event: sqlite3.Row, kind: str
+    ) -> list[str]:
+        event_id = int(event["id"])
+        child_ids = [
+            int(row["id"])
+            for row in db.execute(
+                "SELECT id FROM events WHERE parent_event_id=? AND direction='assistant'",
+                (event_id,),
+            ).fetchall()
+        ]
+        ids = [event_id, *child_ids]
+        placeholders = ",".join("?" for _ in ids)
+        question_rows = db.execute(
+            f"SELECT DISTINCT question_uuid FROM question_events WHERE event_id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        changed_questions: list[str] = []
+        for item in question_rows:
+            question_uuid = str(item["question_uuid"])
+            changed = False
+            target_relation = "primary" if kind == "question" else "excluded"
+            current = db.execute(
+                "SELECT relation,ordinal FROM question_events WHERE question_uuid=? AND event_id=?",
+                (question_uuid, event_id),
+            ).fetchone()
+            if current and current["relation"] not in {"boundary", target_relation}:
+                db.execute(
+                    "DELETE FROM question_events WHERE question_uuid=? AND event_id=?",
+                    (question_uuid, event_id),
+                )
+                db.execute(
+                    "INSERT INTO question_events(question_uuid,event_id,relation,ordinal) VALUES(?,?,?,?)",
+                    (question_uuid, event_id, target_relation, current["ordinal"]),
+                )
+                changed = True
+            child_relation = "answer" if kind == "question" else "excluded"
+            for child_id in child_ids:
+                child = db.execute(
+                    "SELECT relation,ordinal FROM question_events WHERE question_uuid=? AND event_id=?",
+                    (question_uuid, child_id),
+                ).fetchone()
+                if child and child["relation"] != child_relation:
+                    db.execute(
+                        "DELETE FROM question_events WHERE question_uuid=? AND event_id=?",
+                        (question_uuid, child_id),
+                    )
+                    db.execute(
+                        "INSERT INTO question_events(question_uuid,event_id,relation,ordinal) VALUES(?,?,?,?)",
+                        (question_uuid, child_id, child_relation, child["ordinal"]),
+                    )
+                    changed = True
+            if not changed:
+                continue
+            db.execute(
+                """
+                UPDATE questions SET event_count=(
+                    SELECT COUNT(*) FROM question_events
+                    WHERE question_uuid=? AND relation IN ('primary','answer')
+                ) WHERE uuid=?
+                """,
+                (question_uuid, question_uuid),
+            )
+            status = db.execute(
+                "SELECT status FROM questions WHERE uuid=?", (question_uuid,)
+            ).fetchone()["status"]
+            if status in {"ARCHIVED", "FINALIZE_FAILED"} or (
+                status == "EMPTY" and kind == "question"
+            ):
+                self._retry_row(
+                    db,
+                    question_uuid,
+                    audit_action="classification_repair_rearchive",
+                )
+                changed_questions.append(question_uuid)
+        return changed_questions
 
     async def mark_boundary(self, event_id: int, rule: str) -> int:
         """Append a boundary marker event; raw events themselves remain immutable."""
@@ -433,13 +767,48 @@ class ArchiveStore:
                 """,
                 (umo, start_id, boundary_event_id),
             ).fetchall()
-            effective = [
-                row
-                for row in rows
-                if not row["is_command"]
-                and (row["body_text"].strip() or row["has_attachment"])
-                and not (row["direction"] == "assistant" and row["is_boundary"])
-            ]
+            revisions = self._latest_classifications(db, rows)
+            user_kinds: dict[int, str] = {}
+            for row in rows:
+                if row["direction"] != "user":
+                    continue
+                revision = revisions.get(int(row["id"]))
+                user_kinds[int(row["id"])] = str(
+                    revision["kind"] if revision else row["kind"]
+                )
+
+            effective: list[sqlite3.Row] = []
+            for row in rows:
+                row_id = int(row["id"])
+                body_text = str(row["body_text"] or "")
+                if row["direction"] == "user":
+                    revision = revisions.get(row_id)
+                    kind = user_kinds.get(row_id, str(row["kind"]))
+                    if revision:
+                        body_text = str(revision["body_text"] or "")
+                    include = kind == "question" and (
+                        body_text.strip() or row["has_attachment"]
+                    )
+                    # An archive boundary may contain a final verbatim supplement.
+                    if kind == "archive" and body_text.strip():
+                        include = True
+                elif row["direction"] == "assistant":
+                    parent_id = int(row["parent_event_id"] or 0)
+                    parent_kind = user_kinds.get(parent_id)
+                    include = (
+                        parent_kind == "question"
+                        and bool(str(row["text"] or "").strip() or row["has_attachment"])
+                    ) if parent_kind else (
+                        not row["is_command"]
+                        and bool(body_text.strip() or row["has_attachment"])
+                        and not row["is_boundary"]
+                    )
+                    if include and not body_text.strip():
+                        body_text = str(row["text"] or "")
+                else:
+                    include = False
+                if include:
+                    effective.append(row)
             question_uuid = str(uuid.uuid4())
             status = "FINALIZING" if effective else "EMPTY"
             now = utc_timestamp()
@@ -516,6 +885,16 @@ class ArchiveStore:
             events = db.execute(
                 """
                 SELECT e.*, qe.relation, qe.ordinal,
+                       (
+                           SELECT cr.kind FROM classification_revisions cr
+                           WHERE cr.event_id=e.id
+                           ORDER BY cr.revision DESC LIMIT 1
+                       ) AS repaired_kind,
+                       (
+                           SELECT cr.body_text FROM classification_revisions cr
+                           WHERE cr.event_id=e.id
+                           ORDER BY cr.revision DESC LIMIT 1
+                       ) AS repaired_body_text,
                        COALESCE((
                            SELECT json_group_array(json_object(
                                'sha256', ea.sha256,
@@ -537,8 +916,42 @@ class ArchiveStore:
                 (question_uuid,),
             ).fetchall()
             result = dict(question)
-            result["events"] = [self._event_dict(row) for row in events]
+            result["events"] = [self._source_event_dict(row) for row in events]
             return result
+
+    @staticmethod
+    def _latest_classifications(
+        db: sqlite3.Connection, rows: list[sqlite3.Row]
+    ) -> dict[int, sqlite3.Row]:
+        event_ids = [int(row["id"]) for row in rows if row["direction"] == "user"]
+        if not event_ids:
+            return {}
+        placeholders = ",".join("?" for _ in event_ids)
+        revisions = db.execute(
+            f"""
+            SELECT cr.* FROM classification_revisions cr
+            JOIN (
+                SELECT event_id,MAX(revision) AS revision
+                FROM classification_revisions
+                WHERE event_id IN ({placeholders})
+                GROUP BY event_id
+            ) latest ON latest.event_id=cr.event_id AND latest.revision=cr.revision
+            """,
+            event_ids,
+        ).fetchall()
+        return {int(row["event_id"]): row for row in revisions}
+
+    @classmethod
+    def _source_event_dict(cls, row: sqlite3.Row) -> dict[str, Any]:
+        result = cls._event_dict(row)
+        repaired_kind = result.pop("repaired_kind", None)
+        repaired_body = result.pop("repaired_body_text", None)
+        if repaired_kind:
+            result["kind"] = repaired_kind
+            result["body_text"] = repaired_body or ""
+        elif result.get("relation") == "answer" and not result.get("body_text"):
+            result["body_text"] = result.get("text") or ""
+        return result
 
     async def claim_job(self, question_uuid: str) -> bool:
         return self._claim_job_sync(question_uuid)
@@ -838,6 +1251,15 @@ class ArchiveStore:
                 f"SELECT COUNT(*) AS c FROM questions {where} {'AND' if where else 'WHERE'} status='FINALIZE_FAILED'",
                 params,
             ).fetchone()["c"]
+            classification_where = "AND e.umo=?" if umo else ""
+            pending_classifications = db.execute(
+                f"""
+                SELECT COUNT(*) AS c FROM classification_jobs cj
+                JOIN events e ON e.id=cj.event_id
+                WHERE cj.status <> 'DONE' {classification_where}
+                """,
+                params,
+            ).fetchone()["c"]
             umo_count = db.execute(
                 "SELECT COUNT(DISTINCT umo) AS c FROM events"
             ).fetchone()["c"]
@@ -860,6 +1282,7 @@ class ArchiveStore:
                 "questions": int(questions),
                 "finalizing": int(finalizing),
                 "failed": int(failed),
+                "pending_classifications": int(pending_classifications),
                 "umos": int(umo_count),
                 "umo_values": [str(row["umo"]) for row in umo_rows],
                 "subjects": [dict(row) for row in subject_rows],
