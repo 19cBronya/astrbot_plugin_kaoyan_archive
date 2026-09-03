@@ -320,9 +320,8 @@ function renderAttachment(attachment) {
   loading.className = "attachment-loading";
   loading.textContent = "图片加载中…";
   const image = document.createElement("img");
-  image.className = "attachment-image hidden";
+  image.className = "attachment-image";
   image.alt = attachment.name || "题目图片";
-  image.loading = "lazy";
   image.decoding = "async";
   const caption = document.createElement("figcaption");
   caption.textContent = label;
@@ -334,7 +333,6 @@ function renderAttachment(attachment) {
     .then((dataUrl) => {
       image.addEventListener("load", () => {
         loading.classList.add("hidden");
-        image.classList.remove("hidden");
       }, { once: true });
       image.addEventListener("error", () => {
         loading.textContent = "图片解码失败，已保留附件记录";
@@ -351,14 +349,33 @@ function renderAttachment(attachment) {
 
 function loadImagePreview(sha256) {
   if (!imagePreviewCache.has(sha256)) {
-    const pending = apiGet(`attachments/${encodeURIComponent(sha256)}`).then((result) => {
-      if (!result?.data_url) throw new Error("预览接口未返回图片");
-      return result.data_url;
-    });
+    const request = apiGet(`attachments/${encodeURIComponent(sha256)}`);
+    const pending = withTimeout(request, 15000, "预览请求超时").then(
+      (result) => {
+        if (!result?.data_url) throw new Error("预览接口未返回图片");
+        return result.data_url;
+      },
+    );
     imagePreviewCache.set(sha256, pending);
     pending.catch(() => imagePreviewCache.delete(sha256));
   }
   return imagePreviewCache.get(sha256);
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 function knowledgeChip(label) {

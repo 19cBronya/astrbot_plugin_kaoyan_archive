@@ -31,6 +31,14 @@ def test_page_uses_iframe_safe_confirmation_dialog() -> None:
     assert "window.confirm" not in script
 
 
+def test_image_preview_does_not_lazy_load_while_hidden() -> None:
+    script = (PAGE / "app.js").read_text(encoding="utf-8")
+
+    assert 'image.className = "attachment-image hidden"' not in script
+    assert 'image.loading = "lazy"' not in script
+    assert 'withTimeout(request, 15000, "预览请求超时")' in script
+
+
 def test_all_katex_fonts_referenced_by_css_are_vendored() -> None:
     stylesheet = (KATEX / "katex.min.css").read_text(encoding="utf-8")
     font_paths = set(re.findall(r"url\((fonts/[^)]+)\)", stylesheet))
