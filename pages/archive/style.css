@@ -122,6 +122,16 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px c
 .question.deleted { opacity: 0.58; }
 .question-id { margin: 0 0 6px; color: var(--accent); font-size: 0.76rem; font-weight: 800; letter-spacing: 0.08em; }
 .question h3 { margin: 0; font-size: 1rem; line-height: 1.45; }
+.question-overview {
+  display: -webkit-box;
+  margin: 8px 0 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.65;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
 .question-meta { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 9px; color: var(--muted); font-size: 0.76rem; }
 .question-knowledge { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }
 .knowledge-chip { display: inline-flex; align-items: center; min-height: 25px; padding: 3px 9px; border-radius: 999px; color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); font-size: 0.72rem; font-weight: 650; }

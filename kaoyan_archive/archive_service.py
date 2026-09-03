@@ -14,11 +14,12 @@ from .provider_fallback import (
 from .storage import ArchiveStore
 
 
-ARCHIVE_PROMPT_VERSION = "archive-v3"
+ARCHIVE_PROMPT_VERSION = "archive-v4"
 ARCHIVE_SYSTEM_PROMPT = r"""你是考研答疑归档器，只整理给定对话，不继续答题。
-返回严格 JSON 对象，字段为 subject、title、knowledge_points、summary：
+返回严格 JSON 对象，字段为 subject、title、overview、knowledge_points、summary：
 - subject 必须从允许科目中选择；
 - title 用一句简洁中文概括题目；
+- overview 使用 1 至 2 句中文概括问题目标、核心结论或解题方向，适合直接显示在题目列表中，不使用 Markdown，不超过 160 字；
 - knowledge_points 是 1 至 8 个简洁的中文知识点字符串组成的数组；
 - summary 使用 Markdown，依次整理题目、关键追问、解答结论和仍未解决点；
 - 完整保留有意义的数学公式，行内公式使用 \(...\)，独立公式使用 \[...\]；按 JSON 规则转义反斜杠；
@@ -32,6 +33,7 @@ class ArchiveResult:
     public_id: str
     subject: str
     title: str
+    overview: str
     summary: str
     event_count: int
     warning: str = ""
@@ -106,6 +108,7 @@ class ArchiveService:
             question_uuid=question_uuid,
             subject=archive["subject"],
             title=archive["title"],
+            overview=archive["overview"],
             summary=archive["summary"],
             knowledge_points=archive["knowledge_points"],
             provider_id=provider_id or "local",
@@ -165,6 +168,7 @@ class ArchiveService:
         local = self._local_archive(transcript, subjects)
         subject = str(value.get("subject") or "").strip()
         title = str(value.get("title") or "").strip()
+        overview = re.sub(r"\s+", " ", str(value.get("overview") or "")).strip()
         summary = str(value.get("summary") or "").strip()
         raw_points = value.get("knowledge_points")
         knowledge_points = (
@@ -175,6 +179,7 @@ class ArchiveService:
         return {
             "subject": subject if subject in subjects else local["subject"],
             "title": title[:200] or local["title"],
+            "overview": overview[:300] or local["overview"],
             "summary": summary or local["summary"],
             "knowledge_points": knowledge_points or local["knowledge_points"],
         }
@@ -212,10 +217,23 @@ class ArchiveService:
             "未命名题目",
         )
         title = re.sub(r"\s+", " ", first_user)[:60]
+        first_answer = next(
+            (
+                line.removeprefix("助手：").strip()
+                for line in transcript.splitlines()
+                if line.startswith("助手：") and line.removeprefix("助手：").strip()
+            ),
+            "",
+        )
+        overview = f"题目主要讨论：{title}。"
+        if first_answer:
+            compact_answer = re.sub(r"\s+", " ", first_answer)[:140]
+            overview += f"归档解答的核心方向是：{compact_answer}"
         summary = "## 对话归档\n\n" + (transcript or "（仅包含附件，暂无文本）")
         return {
             "subject": subject,
             "title": title,
+            "overview": overview[:300],
             "summary": summary,
             "knowledge_points": knowledge_points or [subject],
         }
@@ -234,6 +252,7 @@ class ArchiveService:
             public_id=row.get("public_id") or "",
             subject=row.get("subject") or "其他",
             title=row.get("title") or "未命名题目",
+            overview=row.get("overview") or "",
             summary=row.get("summary") or "",
             event_count=int(row.get("event_count") or 0),
             warning=row.get("analysis_warning") or "",

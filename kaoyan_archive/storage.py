@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import uuid
@@ -11,7 +12,7 @@ from .attachments import CapturedAttachment
 from .utils import canonical_json, utc_timestamp
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class ArchiveStore:
@@ -108,6 +109,7 @@ class ArchiveStore:
                     public_id TEXT UNIQUE,
                     subject TEXT NOT NULL DEFAULT '',
                     title TEXT NOT NULL DEFAULT '',
+                    overview TEXT NOT NULL DEFAULT '',
                     summary TEXT NOT NULL DEFAULT '',
                     knowledge_points_json TEXT NOT NULL DEFAULT '[]',
                     status TEXT NOT NULL,
@@ -182,6 +184,25 @@ class ArchiveStore:
                     "ALTER TABLE questions ADD COLUMN knowledge_points_json "
                     "TEXT NOT NULL DEFAULT '[]'"
                 )
+            overview_added = "overview" not in question_columns
+            if overview_added:
+                db.execute(
+                    "ALTER TABLE questions ADD COLUMN overview TEXT NOT NULL DEFAULT ''"
+                )
+                old_questions = db.execute(
+                    "SELECT uuid,title,summary FROM questions WHERE status='ARCHIVED'"
+                ).fetchall()
+                for question in old_questions:
+                    db.execute(
+                        "UPDATE questions SET overview=? WHERE uuid=?",
+                        (
+                            self._overview_from_text(
+                                str(question["summary"] or ""),
+                                str(question["title"] or ""),
+                            ),
+                            question["uuid"],
+                        ),
+                    )
             db.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
                 (SCHEMA_VERSION, utc_timestamp()),
@@ -519,12 +540,14 @@ class ArchiveStore:
         provider_id: str,
         model_id: str,
         prompt_version: str,
+        overview: str = "",
         warning: str = "",
     ) -> dict[str, Any]:
         return self._complete_question_sync(
             question_uuid,
             subject,
             title,
+            overview,
             summary,
             knowledge_points or [],
             provider_id,
@@ -538,6 +561,7 @@ class ArchiveStore:
         question_uuid: str,
         subject: str,
         title: str,
+        overview: str,
         summary: str,
         knowledge_points: list[str],
         provider_id: str,
@@ -573,10 +597,13 @@ class ArchiveStore:
                     )
                 public_id = f"{subject}{value:04d}"
             now = utc_timestamp()
+            cleaned_overview = re.sub(r"\s+", " ", overview).strip()[:300]
+            if not cleaned_overview:
+                cleaned_overview = self._overview_from_text(summary, title)
             db.execute(
                 """
                 UPDATE questions
-                SET public_id=?, subject=?, title=?, summary=?,
+                SET public_id=?, subject=?, title=?, overview=?, summary=?,
                     knowledge_points_json=?, status='ARCHIVED',
                     provider_id=?, model_id=?, prompt_version=?, analysis_warning=?,
                     error='', archived_at=?
@@ -586,6 +613,7 @@ class ArchiveStore:
                     public_id,
                     subject,
                     title.strip()[:200],
+                    cleaned_overview,
                     summary.strip(),
                     canonical_json(
                         [str(item).strip()[:100] for item in knowledge_points if str(item).strip()][:20]
@@ -808,18 +836,18 @@ class ArchiveStore:
             params.append(status)
         if search:
             clauses.append(
-                "(public_id LIKE ? OR title LIKE ? OR summary LIKE ? "
+                "(public_id LIKE ? OR title LIKE ? OR overview LIKE ? OR summary LIKE ? "
                 "OR knowledge_points_json LIKE ?)"
             )
             pattern = f"%{search[:100]}%"
-            params.extend([pattern, pattern, pattern, pattern])
+            params.extend([pattern, pattern, pattern, pattern, pattern])
         if not include_deleted:
             clauses.append("deleted_at IS NULL")
         params.extend([limit, offset])
         with self._lock, self._connect() as db:
             rows = db.execute(
                 f"""
-                SELECT uuid,umo,public_id,subject,title,status,event_count,
+                SELECT uuid,umo,public_id,subject,title,overview,status,event_count,
                        knowledge_points_json,
                        analysis_warning,error,created_at,archived_at,deleted_at
                 FROM questions WHERE {' AND '.join(clauses)}
@@ -884,6 +912,15 @@ class ArchiveStore:
                     {},
                 )
             return cursor.rowcount == 1
+
+    @staticmethod
+    def _overview_from_text(summary: str, title: str) -> str:
+        cleaned = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", str(summary or ""))
+        cleaned = re.sub(r"(?m)^\s*[-*+]\s+", "", cleaned)
+        cleaned = re.sub(r"[`*_>]", "", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = re.sub(r"^对话归档\s*", "", cleaned)
+        return (cleaned or str(title or "暂无概览").strip())[:240]
 
     @staticmethod
     def _question_dict(row: sqlite3.Row) -> dict[str, Any]:

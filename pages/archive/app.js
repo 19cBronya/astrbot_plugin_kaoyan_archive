@@ -129,6 +129,11 @@ function renderQuestions() {
     id.textContent = item.public_id || "等待编号";
     const title = document.createElement("h3");
     title.textContent = item.title || "正在整理题目";
+    const overview = document.createElement("p");
+    overview.className = "question-overview";
+    overview.textContent = item.overview || (
+      item.status === "FINALIZING" ? "归档概览生成中…" : "暂无题目概览"
+    );
     const meta = document.createElement("div");
     meta.className = "question-meta";
     for (const value of [item.subject || "待分类", item.umo, `${item.event_count || 0} 条消息`, dateTime(item.archived_at || item.created_at)]) {
@@ -136,7 +141,7 @@ function renderQuestions() {
       span.textContent = value;
       meta.append(span);
     }
-    main.append(id, title, meta);
+    main.append(id, title, overview, meta);
     const knowledge = document.createElement("div");
     knowledge.className = "question-knowledge";
     for (const point of (item.knowledge_points || []).slice(0, 5)) {

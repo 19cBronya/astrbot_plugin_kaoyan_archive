@@ -36,6 +36,7 @@ class FallbackLLMContext:
                 {
                     "subject": "操作系统",
                     "title": "备用模型整理成功",
+                    "overview": "概括进程状态与线程调度的核心区别。",
                     "knowledge_points": ["进程状态", "线程调度"],
                     "summary": "## 备用整理结果",
                 },
@@ -111,7 +112,8 @@ async def build_question(store: ArchiveStore) -> str:
 
 
 def test_archive_prompt_preserves_renderable_formula_delimiters() -> None:
-    assert ARCHIVE_PROMPT_VERSION == "archive-v3"
+    assert ARCHIVE_PROMPT_VERSION == "archive-v4"
+    assert "overview" in ARCHIVE_SYSTEM_PROMPT
     assert r"\(...\)" in ARCHIVE_SYSTEM_PROMPT
     assert r"\[...\]" in ARCHIVE_SYSTEM_PROMPT
     assert "完整保留" in ARCHIVE_SYSTEM_PROMPT
@@ -139,6 +141,7 @@ def test_local_archive_assigns_subject_and_id(tmp_path: Path) -> None:
     assert result.public_id == "操作系统0001"
     assert result.subject == "操作系统"
     assert "进程和线程" in result.title
+    assert "题目主要讨论" in result.overview
     assert "资源分配单位" in result.summary
 
 
@@ -167,6 +170,8 @@ def test_archive_uses_backup_before_umo_provider(tmp_path: Path) -> None:
     result, detail, context = asyncio.run(scenario())
 
     assert result.title == "备用模型整理成功"
+    assert result.overview == "概括进程状态与线程调度的核心区别。"
+    assert detail["overview"] == result.overview
     assert detail["provider_id"] == "backup-provider"
     assert detail["model_id"] == "backup-model"
     assert detail["knowledge_points"] == ["进程状态", "线程调度"]
@@ -207,6 +212,7 @@ def test_archive_uses_local_rules_when_all_providers_fail(tmp_path: Path) -> Non
     assert detail["status"] == "ARCHIVED"
     assert detail["provider_id"] == "local"
     assert detail["model_id"] == "local-rules"
+    assert detail["overview"]
     assert {"进程", "线程"}.issubset(detail["knowledge_points"])
     assert "所有整理模型均失败" in result.warning
     assert [call["chat_provider_id"] for call in context.calls] == [
