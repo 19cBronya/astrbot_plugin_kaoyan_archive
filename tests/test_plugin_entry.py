@@ -533,6 +533,47 @@ def test_page_can_manually_repair_pending_classification(monkeypatch, tmp_path: 
     assert revision == ("instruction", "manual", "tester")
 
 
+def test_page_can_attach_unarchived_follow_up_to_existing_question(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    plugin = module.KaoyanArchivePlugin(_FakeContext(), _Config())
+    captured = {}
+    scheduled = []
+
+    async def request_json(default=None):
+        return {
+            "target": "unarchived",
+            "action": "attach_existing",
+            "ids": ["41", "42"],
+            "question_uuid": "existing-question",
+        }
+
+    async def attach_unarchived_messages(**kwargs):
+        captured.update(kwargs)
+        return {
+            "question_uuid": kwargs["question_uuid"],
+            "message_count": len(kwargs["event_ids"]),
+            "event_count": 4,
+        }
+
+    module.request.json = request_json
+    plugin.store.attach_unarchived_messages = attach_unarchived_messages
+    plugin._schedule_archive = lambda question_uuid, notify: scheduled.append(
+        (question_uuid, notify)
+    )
+
+    result = asyncio.run(plugin.web_repairs_action())
+
+    assert result["saved"] is True
+    assert captured == {
+        "question_uuid": "existing-question",
+        "event_ids": [41, 42],
+        "editor": "tester",
+    }
+    assert scheduled == [("existing-question", False)]
+
+
 def test_registered_framework_command_skips_classifier(monkeypatch, tmp_path: Path) -> None:
     module = _load_plugin_module(monkeypatch, tmp_path)
     context = _FakeContext()

@@ -149,12 +149,14 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .repair-toolbar { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 16px; background: color-mix(in srgb, var(--bg) 65%, transparent); }
 .repair-select-all { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
 .repair-select-all input, .repair-checkbox { width: 17px; min-height: auto; accent-color: var(--accent); }
+.repair-target { display: grid; min-width: min(360px, 100%); gap: 5px; color: var(--muted); font-size: 0.74rem; }
 .repair-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-left: auto; }
 .repair-list { display: grid; gap: 10px; }
 .repair-item { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px; padding: 18px; border: 1px solid var(--line); border-radius: 15px; background: color-mix(in srgb, var(--surface-strong) 72%, transparent); }
 .repair-checkbox { margin-top: 4px; }
 .repair-content h3 { margin: 0; overflow-wrap: anywhere; font-size: 0.98rem; line-height: 1.55; }
 .repair-meta { display: flex; flex-wrap: wrap; gap: 7px 14px; margin-top: 8px; color: var(--muted); font-size: 0.75rem; }
+.repair-answer { margin: 10px 0 0; padding: 9px 11px; border-radius: 9px; color: var(--muted); background: color-mix(in srgb, var(--accent) 7%, transparent); font-size: 0.78rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .repair-error { margin: 10px 0 0; padding: 9px 11px; border-radius: 9px; color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); font-size: 0.75rem; line-height: 1.55; overflow-wrap: anywhere; }
 
 .overlay { position: fixed; inset: 0; z-index: 30; display: flex; justify-content: flex-end; background: rgba(5, 12, 9, 0.52); backdrop-filter: blur(4px); }

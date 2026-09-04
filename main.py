@@ -25,7 +25,7 @@ from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.9.0"
+PLUGIN_VERSION = "0.10.0"
 INLINE_IMAGE_MIME_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"}
 )
@@ -193,6 +193,7 @@ class KaoyanArchivePlugin(Star):
         yield event.plain_result(
             "考研归档状态："
             f"事件 {stats['events']} 条，题目 {stats['questions']} 道，"
+            f"待归档 {stats['unarchived_messages']} 条，"
             f"待分类 {stats['pending_classifications']} 条，"
             f"处理中 {stats['finalizing']}，失败 {stats['failed']}。"
         )
@@ -540,6 +541,7 @@ class KaoyanArchivePlugin(Star):
         if response := self._require_dashboard_user():
             return response
         pending = await self.store.list_pending_classifications(limit=500)
+        unarchived = await self.store.list_unarchived_messages(limit=500)
         failed = await self.store.list_questions(
             umo="",
             subject="",
@@ -549,7 +551,23 @@ class KaoyanArchivePlugin(Star):
             limit=500,
             offset=0,
         )
-        return json_response({"classifications": pending, "archives": failed})
+        targets = await self.store.list_questions(
+            umo="",
+            subject="",
+            status="ARCHIVED",
+            search="",
+            include_deleted=False,
+            limit=500,
+            offset=0,
+        )
+        return json_response(
+            {
+                "classifications": pending,
+                "unarchived": unarchived,
+                "archives": failed,
+                "targets": targets,
+            }
+        )
 
     async def web_repairs_action(self):
         if response := self._require_dashboard_user():
@@ -599,6 +617,32 @@ class KaoyanArchivePlugin(Star):
                     self._schedule_archive(question_uuid, notify=False)
                     queued += 1
             return json_response({"queued": queued, "action": action})
+        if target == "unarchived" and action == "attach_existing":
+            try:
+                event_ids = sorted({int(item) for item in raw_ids if int(item) > 0})
+            except (TypeError, ValueError):
+                return error_response("invalid event id", status_code=400)
+            question_uuid = str(payload.get("question_uuid") or "").strip()
+            if not event_ids or not question_uuid:
+                return error_response(
+                    "event ids and target question are required", status_code=400
+                )
+            try:
+                attached = await self.store.attach_unarchived_messages(
+                    question_uuid=question_uuid,
+                    event_ids=event_ids,
+                    editor=editor,
+                )
+            except ValueError as exc:
+                return error_response(str(exc), status_code=409)
+            self._schedule_archive(question_uuid, notify=False)
+            logger.info(
+                "归档页面补充消息 user=%s question=%s message_count=%d",
+                editor,
+                question_uuid,
+                attached["message_count"],
+            )
+            return json_response({"saved": True, "attached": attached})
         return error_response("unsupported repair target or action", status_code=400)
 
     async def web_question(self, question_uuid: str):

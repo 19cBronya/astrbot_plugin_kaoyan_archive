@@ -557,3 +557,108 @@ def test_failed_classification_is_excluded_until_manual_repair(tmp_path: Path) -
             (user_id,),
         ).fetchone()
     assert revision == ("question", "manual", "tester")
+
+
+def test_unarchived_follow_up_can_be_attached_to_existing_question(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    umo = "default:FriendMessage:follow-up"
+    original_id = add_event(
+        store, umo=umo, direction="user", text="什么是进程？"
+    )
+    first_boundary = add_event(
+        store, umo=umo, direction="user", text="我问完了", body_text="", boundary=True
+    )
+    question = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=first_boundary)
+    )
+    assert question
+    asyncio.run(store.claim_job(question["uuid"]))
+    archived = asyncio.run(
+        store.complete_question(
+            question_uuid=question["uuid"],
+            subject="操作系统",
+            title="进程概念",
+            overview="进程的基本概念。",
+            summary="## 进程概念\n\n进程是资源分配的基本单位。",
+            knowledge_points=["进程"],
+            provider_id="archive-provider",
+            model_id="archive-model",
+            prompt_version="test",
+        )
+    )
+    follow_up_id = asyncio.run(
+        store.add_event(
+            umo=umo,
+            direction="user",
+            platform_message_id="follow-up-user",
+            parent_event_id=None,
+            sender_id="u",
+            sender_name="u",
+            kind="question",
+            text="那线程和进程有什么区别？",
+            body_text="那线程和进程有什么区别？",
+            components=[],
+            raw={},
+            is_command=False,
+            is_boundary=False,
+            boundary_rule="",
+            created_at=2,
+            provider_id="classifier",
+            model_id="classifier-model",
+            prompt_version="classifier",
+        )
+    )
+    answer_id = asyncio.run(
+        store.add_event(
+            umo=umo,
+            direction="assistant",
+            platform_message_id="follow-up-answer",
+            parent_event_id=follow_up_id,
+            sender_id="bot",
+            sender_name="bot",
+            kind="assistant",
+            text="线程共享进程资源。",
+            body_text="线程共享进程资源。",
+            components=[],
+            raw={},
+            is_command=False,
+            is_boundary=False,
+            boundary_rule="",
+            created_at=3,
+            provider_id="umo-provider",
+            model_id="umo-model",
+            prompt_version="runtime",
+        )
+    )
+
+    pending = asyncio.run(store.list_unarchived_messages())
+    assert len(pending) == 1
+    assert pending[0]["event_id"] == follow_up_id
+    assert pending[0]["answers"][0]["id"] == answer_id
+    assert asyncio.run(store.stats())["unarchived_messages"] == 1
+
+    attached = asyncio.run(
+        store.attach_unarchived_messages(
+            question_uuid=archived["uuid"],
+            event_ids=[follow_up_id],
+            editor="tester",
+        )
+    )
+    assert attached["message_count"] == 1
+    assert attached["event_count"] == 2
+    assert asyncio.run(store.stats())["unarchived_messages"] == 0
+    source = asyncio.run(store.question_source(archived["uuid"]))
+    assert source and source["status"] == "FINALIZING"
+    assert [(event["id"], event["relation"]) for event in source["events"]] == [
+        (original_id, "primary"),
+        (follow_up_id, "supplement"),
+        (answer_id, "answer"),
+    ]
+
+    second_boundary = add_event(
+        store, umo=umo, direction="user", text="我又问完了", body_text="", boundary=True
+    )
+    duplicate = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=second_boundary)
+    )
+    assert duplicate and duplicate["status"] == "EMPTY"

@@ -45,8 +45,12 @@ def test_page_has_batch_repair_center_and_collapsed_excluded_events() -> None:
 
     assert 'id="repair-view"' in document
     assert 'id="repair-select-all"' in document
+    assert 'id="repair-target"' in document
     assert 'id="detail-excluded"' in document
     assert "pending_classifications" in script
+    assert "unarchived_messages" in script
+    assert 'repair: "unarchived"' in script
+    assert 'attach_existing: "归档至所选已有题目"' in script
     assert 'runRepairAction("manual_question")' in script
     assert 'runRepairAction("manual_instruction")' in script
     assert 'runRepairAction("manual_archive")' in script

@@ -390,6 +390,235 @@ class ArchiveStore:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    async def list_unarchived_messages(
+        self, *, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        return self._list_unarchived_messages_sync(limit)
+
+    def _list_unarchived_messages_sync(self, limit: int) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT e.id AS event_id,e.umo,e.text,e.created_at,e.platform_message_id,
+                       COUNT(DISTINCT ea.sha256) AS attachment_count,
+                       COALESCE((
+                           SELECT json_group_array(json_object(
+                               'sha256', uea.sha256,
+                               'name', uea.original_name,
+                               'type', uea.component_type,
+                               'size', ua.size,
+                               'mime_type', ua.mime_type,
+                               'stored_path', ua.stored_path
+                           ))
+                           FROM event_attachments uea
+                           JOIN attachments ua ON ua.sha256=uea.sha256
+                           WHERE uea.event_id=e.id
+                       ), '[]') AS attachments_json
+                FROM events e
+                LEFT JOIN event_attachments ea ON ea.event_id=e.id
+                WHERE e.direction='user'
+                  AND COALESCE((
+                      SELECT cr.kind FROM classification_revisions cr
+                      WHERE cr.event_id=e.id
+                      ORDER BY cr.revision DESC LIMIT 1
+                  ), e.kind)='question'
+                  AND NOT EXISTS(
+                      SELECT 1 FROM question_events qe
+                      WHERE qe.event_id=e.id
+                        AND qe.relation IN ('primary','supplement')
+                  )
+                GROUP BY e.id
+                ORDER BY e.id DESC LIMIT ?
+                """,
+                (min(max(int(limit), 1), 500),),
+            ).fetchall()
+            result: list[dict[str, Any]] = []
+            for row in rows:
+                item = self._event_dict(row)
+                answers = db.execute(
+                    """
+                    SELECT e.id,e.text,e.created_at,
+                           COUNT(DISTINCT ea.sha256) AS attachment_count,
+                           COALESCE((
+                               SELECT json_group_array(json_object(
+                                   'sha256', aea.sha256,
+                                   'name', aea.original_name,
+                                   'type', aea.component_type,
+                                   'size', aa.size,
+                                   'mime_type', aa.mime_type,
+                                   'stored_path', aa.stored_path
+                               ))
+                               FROM event_attachments aea
+                               JOIN attachments aa ON aa.sha256=aea.sha256
+                               WHERE aea.event_id=e.id
+                           ), '[]') AS attachments_json
+                    FROM events e
+                    LEFT JOIN event_attachments ea ON ea.event_id=e.id
+                    WHERE e.parent_event_id=? AND e.direction='assistant'
+                    GROUP BY e.id ORDER BY e.id
+                    """,
+                    (row["event_id"],),
+                ).fetchall()
+                item["answers"] = [self._event_dict(answer) for answer in answers]
+                result.append(item)
+            return result
+
+    async def attach_unarchived_messages(
+        self,
+        *,
+        question_uuid: str,
+        event_ids: list[int],
+        editor: str,
+    ) -> dict[str, Any]:
+        return self._attach_unarchived_messages_sync(
+            question_uuid=question_uuid,
+            event_ids=event_ids,
+            editor=editor,
+        )
+
+    def _attach_unarchived_messages_sync(
+        self,
+        *,
+        question_uuid: str,
+        event_ids: list[int],
+        editor: str,
+    ) -> dict[str, Any]:
+        unique_ids = sorted({int(event_id) for event_id in event_ids})
+        if not unique_ids:
+            raise ValueError("no messages selected")
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            question = db.execute(
+                """
+                SELECT * FROM questions
+                WHERE uuid=? AND status='ARCHIVED' AND deleted_at IS NULL
+                """,
+                (question_uuid,),
+            ).fetchone()
+            if not question:
+                db.rollback()
+                raise ValueError("target question is not available")
+            placeholders = ",".join("?" for _ in unique_ids)
+            rows = db.execute(
+                f"""
+                SELECT e.*,
+                       COALESCE((
+                           SELECT cr.kind FROM classification_revisions cr
+                           WHERE cr.event_id=e.id
+                           ORDER BY cr.revision DESC LIMIT 1
+                       ), e.kind) AS effective_kind
+                FROM events e
+                WHERE e.id IN ({placeholders}) AND e.direction='user'
+                ORDER BY e.id
+                """,
+                unique_ids,
+            ).fetchall()
+            if len(rows) != len(unique_ids):
+                db.rollback()
+                raise ValueError("one or more messages do not exist")
+            if any(str(row["umo"]) != str(question["umo"]) for row in rows):
+                db.rollback()
+                raise ValueError("messages and target question must use the same UMO")
+            if any(str(row["effective_kind"]) != "question" for row in rows):
+                db.rollback()
+                raise ValueError("only classified question messages can be attached")
+            already_archived = db.execute(
+                f"""
+                SELECT qe.event_id FROM question_events qe
+                WHERE qe.event_id IN ({placeholders})
+                  AND qe.relation IN ('primary','supplement')
+                LIMIT 1
+                """,
+                unique_ids,
+            ).fetchone()
+            if already_archived:
+                db.rollback()
+                raise ValueError("one or more messages are already archived")
+
+            ordinal = int(
+                db.execute(
+                    """
+                    SELECT COALESCE(MAX(ordinal), -1) + 1 AS value
+                    FROM question_events WHERE question_uuid=?
+                    """,
+                    (question_uuid,),
+                ).fetchone()["value"]
+            )
+            attached_ids: list[int] = []
+            for row in rows:
+                event_id = int(row["id"])
+                db.execute(
+                    """
+                    DELETE FROM question_events
+                    WHERE question_uuid=? AND event_id=? AND relation='excluded'
+                    """,
+                    (question_uuid, event_id),
+                )
+                db.execute(
+                    """
+                    INSERT INTO question_events(question_uuid,event_id,relation,ordinal)
+                    VALUES(?,?,'supplement',?)
+                    """,
+                    (question_uuid, event_id, ordinal),
+                )
+                attached_ids.append(event_id)
+                ordinal += 1
+                answers = db.execute(
+                    """
+                    SELECT id FROM events
+                    WHERE parent_event_id=? AND direction='assistant'
+                    ORDER BY id
+                    """,
+                    (event_id,),
+                ).fetchall()
+                for answer in answers:
+                    answer_id = int(answer["id"])
+                    db.execute(
+                        """
+                        DELETE FROM question_events
+                        WHERE question_uuid=? AND event_id=? AND relation='excluded'
+                        """,
+                        (question_uuid, answer_id),
+                    )
+                    db.execute(
+                        """
+                        INSERT OR IGNORE INTO question_events(
+                            question_uuid,event_id,relation,ordinal
+                        ) VALUES(?,?,'answer',?)
+                        """,
+                        (question_uuid, answer_id, ordinal),
+                    )
+                    attached_ids.append(answer_id)
+                    ordinal += 1
+            db.execute(
+                """
+                UPDATE questions SET event_count=(
+                    SELECT COUNT(*) FROM question_events
+                    WHERE question_uuid=?
+                      AND relation IN ('primary','supplement','answer')
+                ) WHERE uuid=?
+                """,
+                (question_uuid, question_uuid),
+            )
+            self._retry_row(db, question_uuid, audit_action="attach_supplement")
+            self._audit(
+                db,
+                "attach_unarchived_messages",
+                "question",
+                question_uuid,
+                {
+                    "event_ids": unique_ids,
+                    "attached_event_ids": attached_ids,
+                    "editor": editor[:100],
+                },
+            )
+            db.commit()
+            return {
+                "question_uuid": question_uuid,
+                "message_count": len(unique_ids),
+                "event_count": len(attached_ids),
+            }
+
     async def classification_event(self, event_id: int) -> dict[str, Any] | None:
         return self._classification_event_sync(event_id)
 
@@ -603,7 +832,8 @@ class ArchiveStore:
                 """
                 UPDATE questions SET event_count=(
                     SELECT COUNT(*) FROM question_events
-                    WHERE question_uuid=? AND relation IN ('primary','answer')
+                    WHERE question_uuid=?
+                      AND relation IN ('primary','supplement','answer')
                 ) WHERE uuid=?
                 """,
                 (question_uuid, question_uuid),
@@ -760,7 +990,12 @@ class ArchiveStore:
             rows = db.execute(
                 """
                 SELECT e.*,
-                       EXISTS(SELECT 1 FROM event_attachments ea WHERE ea.event_id=e.id) AS has_attachment
+                       EXISTS(SELECT 1 FROM event_attachments ea WHERE ea.event_id=e.id) AS has_attachment,
+                       EXISTS(
+                           SELECT 1 FROM question_events qe
+                           WHERE qe.event_id=e.id
+                             AND qe.relation IN ('primary','supplement')
+                       ) AS already_archived
                 FROM events e
                 WHERE e.umo=? AND e.id>? AND e.id<=?
                 ORDER BY e.id
@@ -768,6 +1003,7 @@ class ArchiveStore:
                 (umo, start_id, boundary_event_id),
             ).fetchall()
             revisions = self._latest_classifications(db, rows)
+            rows_by_id = {int(row["id"]): row for row in rows}
             user_kinds: dict[int, str] = {}
             for row in rows:
                 if row["direction"] != "user":
@@ -786,7 +1022,7 @@ class ArchiveStore:
                     kind = user_kinds.get(row_id, str(row["kind"]))
                     if revision:
                         body_text = str(revision["body_text"] or "")
-                    include = kind == "question" and (
+                    include = not row["already_archived"] and kind == "question" and (
                         body_text.strip() or row["has_attachment"]
                     )
                     # An archive boundary may contain a final verbatim supplement.
@@ -795,8 +1031,10 @@ class ArchiveStore:
                 elif row["direction"] == "assistant":
                     parent_id = int(row["parent_event_id"] or 0)
                     parent_kind = user_kinds.get(parent_id)
+                    parent = rows_by_id.get(parent_id)
                     include = (
                         parent_kind == "question"
+                        and not (parent and parent["already_archived"])
                         and bool(str(row["text"] or "").strip() or row["has_attachment"])
                     ) if parent_kind else (
                         not row["is_command"]
@@ -910,7 +1148,8 @@ class ArchiveStore:
                        ), '[]') AS attachments_json
                 FROM question_events qe
                 JOIN events e ON e.id=qe.event_id
-                WHERE qe.question_uuid=? AND qe.relation IN ('primary','answer')
+                WHERE qe.question_uuid=?
+                  AND qe.relation IN ('primary','supplement','answer')
                 ORDER BY qe.ordinal
                 """,
                 (question_uuid,),
@@ -1260,6 +1499,24 @@ class ArchiveStore:
                 """,
                 params,
             ).fetchone()["c"]
+            unarchived_where = "AND e.umo=?" if umo else ""
+            unarchived_messages = db.execute(
+                f"""
+                SELECT COUNT(*) AS c FROM events e
+                WHERE e.direction='user' {unarchived_where}
+                  AND COALESCE((
+                      SELECT cr.kind FROM classification_revisions cr
+                      WHERE cr.event_id=e.id
+                      ORDER BY cr.revision DESC LIMIT 1
+                  ), e.kind)='question'
+                  AND NOT EXISTS(
+                      SELECT 1 FROM question_events qe
+                      WHERE qe.event_id=e.id
+                        AND qe.relation IN ('primary','supplement')
+                  )
+                """,
+                params,
+            ).fetchone()["c"]
             umo_count = db.execute(
                 "SELECT COUNT(DISTINCT umo) AS c FROM events"
             ).fetchone()["c"]
@@ -1283,6 +1540,7 @@ class ArchiveStore:
                 "finalizing": int(finalizing),
                 "failed": int(failed),
                 "pending_classifications": int(pending_classifications),
+                "unarchived_messages": int(unarchived_messages),
                 "umos": int(umo_count),
                 "umo_values": [str(row["umo"]) for row in umo_rows],
                 "subjects": [dict(row) for row in subject_rows],
