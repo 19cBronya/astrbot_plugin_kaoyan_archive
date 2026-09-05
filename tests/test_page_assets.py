@@ -71,6 +71,14 @@ def test_page_has_all_messages_membership_manager() -> None:
     assert 'repair: "unarchived"' not in script
 
 
+def test_question_detail_drawer_uses_most_of_desktop_viewport() -> None:
+    stylesheet = (PAGE / "style.css").read_text(encoding="utf-8")
+
+    assert ".detail-drawer { width: 84vw; max-width: 100%;" in stylesheet
+    assert "@media (max-width: 980px)" in stylesheet
+    assert ".detail-drawer { width: 100%; }" in stylesheet
+
+
 def test_all_katex_fonts_referenced_by_css_are_vendored() -> None:
     stylesheet = (KATEX / "katex.min.css").read_text(encoding="utf-8")
     font_paths = set(re.findall(r"url\((fonts/[^)]+)\)", stylesheet))
