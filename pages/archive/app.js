@@ -242,9 +242,12 @@ function renderTimelineEvent(event) {
   const when = document.createElement("span");
   when.textContent = dateTime(event.created_at);
   head.append(who, when);
-  const body = document.createElement("p");
+  const body = document.createElement("div");
   body.className = "event-body";
-  body.textContent = event.text || (event.attachments?.length ? "[附件消息]" : "");
+  appendMarkdownBlocks(
+    body,
+    event.text || (event.attachments?.length ? "[附件消息]" : ""),
+  );
   item.append(head, body);
   for (const attachment of event.attachments || []) {
     item.append(renderAttachment(attachment));
@@ -450,6 +453,11 @@ function renderKnowledge(detail) {
 function renderSummary(markdown) {
   const container = $("detail-summary");
   container.replaceChildren();
+  appendMarkdownBlocks(container, markdown);
+  renderMath(container);
+}
+
+function appendMarkdownBlocks(container, markdown) {
   for (const block of parseSummaryBlocks(markdown)) {
     if (block.type === "math") {
       const node = document.createElement("div");
@@ -473,7 +481,6 @@ function renderSummary(markdown) {
       container.append(paragraph);
     }
   }
-  renderMath(container);
 }
 
 function relationLabel(relation) {

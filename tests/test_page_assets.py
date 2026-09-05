@@ -79,6 +79,16 @@ def test_question_detail_drawer_uses_most_of_desktop_viewport() -> None:
     assert ".detail-drawer { width: 100%; }" in stylesheet
 
 
+def test_timeline_uses_structured_markdown_without_preserved_blank_lines() -> None:
+    script = (PAGE / "app.js").read_text(encoding="utf-8")
+    stylesheet = (PAGE / "style.css").read_text(encoding="utf-8")
+
+    assert "appendMarkdownBlocks(" in script
+    assert "body.textContent = event.text" not in script
+    assert ".event-body .math-block { margin: 0.75em 0;" in stylesheet
+    assert ".event-body { margin: 0; white-space: pre-wrap;" not in stylesheet
+
+
 def test_all_katex_fonts_referenced_by_css_are_vendored() -> None:
     stylesheet = (KATEX / "katex.min.css").read_text(encoding="utf-8")
     font_paths = set(re.findall(r"url\((fonts/[^)]+)\)", stylesheet))

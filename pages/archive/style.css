@@ -202,11 +202,11 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .knowledge-list .knowledge-chip { min-height: 32px; padding: 5px 12px; font-size: 0.8rem; }
 .knowledge-empty { color: var(--muted); font-size: 0.86rem; }
 .summary { margin: 0; padding: 20px; border: 1px solid var(--line); border-radius: 14px; overflow-wrap: anywhere; line-height: 1.72; background: var(--bg); }
-.summary h1, .summary h2, .summary h3 { margin: 18px 0 8px; font-family: inherit; font-size: 1rem; }
-.summary h1:first-child, .summary h2:first-child, .summary h3:first-child { margin-top: 0; }
-.summary p { margin: 8px 0; }
-.summary ul { margin: 8px 0; padding-left: 1.4rem; }
-.summary li { margin: 5px 0; }
+.summary h1, .summary h2, .summary h3, .event-body h1, .event-body h2, .event-body h3 { margin: 18px 0 8px; font-family: inherit; font-size: 1rem; }
+.summary h1:first-child, .summary h2:first-child, .summary h3:first-child, .event-body h1:first-child, .event-body h2:first-child, .event-body h3:first-child { margin-top: 0; }
+.summary p, .event-body p { margin: 0.7em 0; }
+.summary ul, .event-body ul { margin: 0.7em 0; padding-left: 1.4rem; }
+.summary li, .event-body li { margin: 0.35em 0; }
 .math-block, .katex-display {
   max-width: 100%;
   overflow-x: auto;
@@ -215,7 +215,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .math-block { margin: 12px 0; padding: 8px 4px; text-align: center; }
 .math-block .katex-display { margin: 0; padding: 2px 0; }
 .math-fallback { color: var(--danger); text-align: left; white-space: pre-wrap; }
+.event-body .math-block { margin: 0.75em 0; padding: 0.1em 4px; }
 .event-body .katex { white-space: normal; }
+.event-body > :first-child { margin-top: 0; }
+.event-body > :last-child { margin-bottom: 0; }
 .timeline-heading { display: flex; align-items: center; justify-content: space-between; }
 .timeline { display: grid; gap: 12px; }
 .excluded-events { margin-top: 18px; padding: 13px 15px 15px; border: 1px solid var(--line); border-radius: 13px; }
@@ -227,7 +230,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .event.assistant { border-left-color: var(--accent-2); }
 .event.boundary { opacity: 0.7; border-left-style: dashed; }
 .event-head { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 8px; color: var(--muted); font-size: 0.73rem; }
-.event-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
+.event-body { margin: 0; overflow-wrap: anywhere; line-height: 1.65; }
 .attachment { display: inline-flex; margin: 8px 6px 0 0; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font-size: 0.72rem; }
 .attachment-preview { width: min(100%, 780px); margin: 12px 0 2px; }
 .attachment-image-frame {
