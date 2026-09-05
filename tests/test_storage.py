@@ -234,7 +234,8 @@ def test_schema_migrates_existing_questions_for_derived_archive_fields(tmp_path:
     with sqlite3.connect(store.db_path) as db:
         db.execute("ALTER TABLE questions DROP COLUMN knowledge_points_json")
         db.execute("ALTER TABLE questions DROP COLUMN overview")
-        db.execute("DELETE FROM schema_migrations WHERE version IN (2,3,4,5,6)")
+        db.execute("ALTER TABLE questions DROP COLUMN is_manual")
+        db.execute("DELETE FROM schema_migrations WHERE version IN (2,3,4,5,6,7)")
 
     asyncio.run(store.initialize())
     detail = asyncio.run(store.question_detail(question["uuid"]))
@@ -251,8 +252,9 @@ def test_schema_migrates_existing_questions_for_derived_archive_fields(tmp_path:
         }
     assert "knowledge_points_json" in columns
     assert "overview" in columns
+    assert "is_manual" in columns
     assert "rerun_requested" in archive_job_columns
-    assert 6 in versions
+    assert 7 in versions
     assert "question_revisions" in tables
     assert {"classification_jobs", "classification_revisions"} <= tables
     assert detail
@@ -985,3 +987,111 @@ def test_control_messages_cannot_be_reassigned(tmp_path: Path) -> None:
                 event_ids=[boundary_id], question_uuid=None, editor="tester"
             )
         )
+
+
+def test_deleted_question_messages_can_be_archived_as_a_new_question(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    umo = "default:FriendMessage:deleted-to-new"
+    user_id = add_event(store, umo=umo, direction="user", text="需要重新整理的题目")
+    answer_id = asyncio.run(
+        store.add_event(
+            umo=umo,
+            direction="assistant",
+            platform_message_id="deleted-answer",
+            parent_event_id=user_id,
+            sender_id="bot",
+            sender_name="bot",
+            kind="assistant",
+            text="旧题目的回答",
+            body_text="旧题目的回答",
+            components=[],
+            raw={},
+            is_command=False,
+            is_boundary=False,
+            boundary_rule="",
+            created_at=2,
+            provider_id="",
+            model_id="",
+            prompt_version="",
+        )
+    )
+    boundary_id = add_event(
+        store, umo=umo, direction="user", text="问完了", body_text="", boundary=True
+    )
+    old = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=boundary_id)
+    )
+    assert old and asyncio.run(store.claim_job(old["uuid"]))
+    archived_old = asyncio.run(
+        store.complete_question(
+            question_uuid=old["uuid"],
+            subject="数学",
+            title="旧题目",
+            summary="旧总结",
+            provider_id="test",
+            model_id="test",
+            prompt_version="test",
+        )
+    )
+    assert archived_old["public_id"] == "数学0001"
+    assert asyncio.run(store.soft_delete_question(old["uuid"], True)) is True
+    later_user_id = add_event(
+        store, umo=umo, direction="user", text="不应被后台新题边界跳过的后续问题"
+    )
+
+    created = asyncio.run(
+        store.reassign_message_turns(
+            event_ids=[user_id],
+            question_uuid=None,
+            editor="tester",
+            create_new=True,
+        )
+    )
+
+    new_uuid = created["created_question_uuid"]
+    assert new_uuid and new_uuid != old["uuid"]
+    assert created["event_ids"] == [user_id, answer_id]
+    assert created["queued_questions"] == [new_uuid]
+    old_detail = asyncio.run(store.question_detail(old["uuid"]))
+    new_source = asyncio.run(store.question_source(new_uuid))
+    assert old_detail and old_detail["deleted_at"] is not None
+    assert old_detail["event_count"] == 0
+    assert new_source and new_source["status"] == "FINALIZING"
+    assert [(item["id"], item["relation"]) for item in new_source["events"]] == [
+        (user_id, "primary"),
+        (answer_id, "answer"),
+    ]
+    new_detail = asyncio.run(store.question_detail(new_uuid))
+    assert new_detail
+    manual_boundary = next(
+        item for item in new_detail["events"] if item["relation"] == "boundary"
+    )
+    assert manual_boundary["direction"] == "system"
+    assert manual_boundary["boundary_rule"] == "dashboard_manual_archive"
+
+    later_boundary_id = add_event(
+        store, umo=umo, direction="user", text="再次问完", body_text="", boundary=True
+    )
+    later = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=later_boundary_id)
+    )
+    assert later
+    later_source = asyncio.run(store.question_source(later["uuid"]))
+    assert later_source
+    assert [item["id"] for item in later_source["events"]] == [later_user_id]
+
+    assert asyncio.run(store.claim_job(new_uuid)) is True
+    archived_new = asyncio.run(
+        store.complete_question(
+            question_uuid=new_uuid,
+            subject="数学",
+            title="新题目",
+            summary="新总结",
+            provider_id="test",
+            model_id="test",
+            prompt_version="test",
+        )
+    )
+    assert archived_new["public_id"] == "数学0002"

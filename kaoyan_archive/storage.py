@@ -12,7 +12,7 @@ from .attachments import CapturedAttachment
 from .utils import canonical_json, utc_timestamp
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 class ArchiveStore:
@@ -121,6 +121,8 @@ class ArchiveStore:
                     prompt_version TEXT NOT NULL DEFAULT '',
                     analysis_warning TEXT NOT NULL DEFAULT '',
                     error TEXT NOT NULL DEFAULT '',
+                    is_manual INTEGER NOT NULL DEFAULT 0
+                        CHECK (is_manual IN (0, 1)),
                     created_at REAL NOT NULL,
                     archived_at REAL,
                     deleted_at REAL
@@ -252,6 +254,11 @@ class ArchiveStore:
                 db.execute(
                     "ALTER TABLE questions ADD COLUMN knowledge_points_json "
                     "TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "is_manual" not in question_columns:
+                db.execute(
+                    "ALTER TABLE questions ADD COLUMN is_manual "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (is_manual IN (0, 1))"
                 )
             overview_added = "overview" not in question_columns
             if overview_added:
@@ -573,11 +580,13 @@ class ArchiveStore:
         event_ids: list[int],
         question_uuid: str | None,
         editor: str,
+        create_new: bool = False,
     ) -> dict[str, Any]:
         return self._reassign_message_turns_sync(
             event_ids=event_ids,
             question_uuid=question_uuid,
             editor=editor,
+            create_new=create_new,
         )
 
     def _reassign_message_turns_sync(
@@ -586,10 +595,13 @@ class ArchiveStore:
         event_ids: list[int],
         question_uuid: str | None,
         editor: str,
+        create_new: bool,
     ) -> dict[str, Any]:
         selected_ids = sorted({int(event_id) for event_id in event_ids})
         if not selected_ids:
             raise ValueError("no messages selected")
+        if create_new and question_uuid:
+            raise ValueError("new question cannot also specify an existing target")
         with self._lock, self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             target = None
@@ -644,6 +656,72 @@ class ArchiveStore:
                 f"SELECT * FROM events WHERE id IN ({expanded_placeholders}) ORDER BY id",
                 expanded,
             ).fetchall()
+            created_question_uuid = ""
+            if create_new:
+                umos = {str(row["umo"]) for row in rows}
+                if len(umos) != 1:
+                    db.rollback()
+                    raise ValueError("new question messages must use the same UMO")
+                now = utc_timestamp()
+                boundary_cursor = db.execute(
+                    """
+                    INSERT INTO events(
+                        event_uuid,umo,direction,platform_message_id,parent_event_id,
+                        sender_id,sender_name,kind,text,body_text,components_json,
+                        raw_json,is_command,is_boundary,boundary_rule,created_at,
+                        provider_id,model_id,prompt_version,inserted_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        uuid.uuid4().hex,
+                        next(iter(umos)),
+                        "system",
+                        "",
+                        None,
+                        "dashboard",
+                        editor[:100] or "dashboard",
+                        "boundary",
+                        "由归档页面手动建立新题目",
+                        "",
+                        "[]",
+                        canonical_json(
+                            {
+                                "source": "dashboard",
+                                "action": "create_question_from_messages",
+                                "selected_event_ids": selected_ids,
+                            }
+                        ),
+                        1,
+                        1,
+                        "dashboard_manual_archive",
+                        now,
+                        "local",
+                        "dashboard",
+                        "manual-boundary-v1",
+                        now,
+                    ),
+                )
+                boundary_event_id = int(boundary_cursor.lastrowid)
+                created_question_uuid = str(uuid.uuid4())
+                question_uuid = created_question_uuid
+                db.execute(
+                    """
+                    INSERT INTO questions(
+                        uuid,umo,status,start_event_id,boundary_event_id,event_count,
+                        is_manual,created_at,archived_at
+                    ) VALUES(?,?,'ABANDONED',?,?,0,1,?,NULL)
+                    """,
+                    (
+                        question_uuid,
+                        next(iter(umos)),
+                        min(expanded),
+                        boundary_event_id,
+                        now,
+                    ),
+                )
+                target = db.execute(
+                    "SELECT * FROM questions WHERE uuid=?", (question_uuid,)
+                ).fetchone()
             if target and any(str(row["umo"]) != str(target["umo"]) for row in rows):
                 db.rollback()
                 raise ValueError("messages and target question must use the same UMO")
@@ -701,7 +779,9 @@ class ArchiveStore:
                         (question_uuid, event_id),
                     )
                     relation = (
-                        target_relations.get(event_id, "supplement")
+                        target_relations.get(
+                            event_id, "primary" if create_new else "supplement"
+                        )
                         if row["direction"] == "user"
                         else "answer"
                     )
@@ -715,6 +795,15 @@ class ArchiveStore:
                         (question_uuid, event_id, relation, ordinal),
                     )
                     ordinal += 1
+                if create_new:
+                    db.execute(
+                        """
+                        INSERT INTO question_events(
+                            question_uuid,event_id,relation,ordinal
+                        ) VALUES(?,?,'boundary',?)
+                        """,
+                        (question_uuid, boundary_event_id, ordinal),
+                    )
 
             queued: list[str] = []
             abandoned: list[str] = []
@@ -757,7 +846,11 @@ class ArchiveStore:
                     self._queue_after_relation_change(db, affected_uuid)
                     queued.append(affected_uuid)
 
-            action = "assign_message_turns" if question_uuid else "unarchive_message_turns"
+            action = (
+                "create_question_from_message_turns"
+                if create_new
+                else "assign_message_turns" if question_uuid else "unarchive_message_turns"
+            )
             self._audit(
                 db,
                 action,
@@ -777,6 +870,7 @@ class ArchiveStore:
                 "event_count": len(expanded),
                 "event_ids": expanded,
                 "question_uuid": question_uuid or "",
+                "created_question_uuid": created_question_uuid,
                 "affected_questions": sorted(affected),
                 "queued_questions": queued,
                 "abandoned_questions": abandoned,
@@ -1546,7 +1640,8 @@ class ArchiveStore:
             previous = db.execute(
                 """
                 SELECT MAX(boundary_event_id) AS boundary_id
-                FROM questions WHERE umo=? AND boundary_event_id < ?
+                FROM questions
+                WHERE umo=? AND boundary_event_id < ? AND is_manual=0
                 """,
                 (umo, boundary_event_id),
             ).fetchone()["boundary_id"]
@@ -1753,7 +1848,7 @@ class ArchiveStore:
         if repaired_kind:
             result["kind"] = repaired_kind
             result["body_text"] = repaired_body or ""
-        elif result.get("relation") in {"answer", "supplement"} and not result.get("body_text"):
+        elif result.get("relation") in {"primary", "supplement", "answer"} and not result.get("body_text"):
             result["body_text"] = result.get("text") or ""
         return result
 

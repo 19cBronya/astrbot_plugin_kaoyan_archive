@@ -263,6 +263,13 @@ function renderDetailActions(detail) {
     actions.append(actionButton("重试归档", "primary", () => actOnQuestion("rearchive")));
   }
   if (detail.deleted_at) {
+    if ((detail.events || []).some((event) =>
+      ["primary", "supplement", "answer"].some((relation) =>
+        relationParts(event.relation).includes(relation),
+      ),
+    )) {
+      actions.append(actionButton("归档为新题目", "secondary", () => actOnQuestion("rearchive_new")));
+    }
     actions.append(actionButton("恢复题目", "primary", () => actOnQuestion("restore")));
   } else {
     actions.append(actionButton("软删除", "danger", () => actOnQuestion("delete")));
@@ -570,60 +577,37 @@ function renderMessages() {
     check.title = entry.move_blocked_reason || "按完整问答轮次调整归属";
     check.addEventListener("change", updateMessageSelection);
 
-    const content = document.createElement("div");
-    content.className = "message-content";
-    const header = document.createElement("div");
-    header.className = "message-head";
+    const details = document.createElement("details");
+    details.className = "message-details";
+    const summary = document.createElement("summary");
+    summary.className = "message-summary";
     const identity = document.createElement("strong");
+    identity.className = "message-identity";
     identity.textContent = `#${entry.id} · ${messageRoleLabel(entry)}`;
-    const time = document.createElement("span");
-    time.textContent = dateTime(entry.created_at);
-    header.append(identity, time);
-
-    const meta = document.createElement("div");
-    meta.className = "message-meta";
-    for (const value of [
-      entry.umo,
-      entry.platform_message_id ? `消息 ID ${entry.platform_message_id}` : "",
-      entry.parent_event_id ? `回复 #${entry.parent_event_id}` : "",
-      entry.effective_kind ? `分类 ${entry.effective_kind}` : "",
-    ].filter(Boolean)) {
-      const span = document.createElement("span");
-      span.textContent = value;
-      meta.append(span);
-    }
-
-    const text = document.createElement("p");
-    text.className = "message-body";
-    text.textContent = entry.text || (entry.attachments?.length ? "[附件消息]" : "[空消息]");
-    content.append(header, meta, text);
-    for (const attachment of entry.attachments || []) {
-      content.append(renderAttachment(attachment));
-    }
-
-    const memberships = document.createElement("div");
-    memberships.className = "message-memberships";
+    const preview = document.createElement("span");
+    preview.className = "message-preview";
+    preview.textContent = entry.text || (entry.attachments?.length ? "[附件消息]" : "[空消息]");
+    const compactMembership = document.createElement("span");
+    compactMembership.className = "message-compact-membership";
     const active = activeMemberships(entry);
-    if (!active.length && !entry.is_boundary && !entry.is_command) {
-      memberships.append(badge("未归档", "warn"));
-    }
-    for (const membership of entry.memberships || []) {
-      const relation = relationLabel(membership.relation);
-      const label = `${membership.public_id || "未编号"} · ${relation}${membership.deleted_at ? " · 已删除" : ""}`;
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = `membership-chip ${membership.relation === "excluded" ? "excluded" : ""}`;
-      chip.textContent = label;
-      chip.title = membership.title || label;
-      chip.addEventListener("click", () => openDetail(membership.question_uuid));
-      memberships.append(chip);
-    }
-    if (entry.classification_status && entry.classification_status !== "DONE") {
-      memberships.append(badge("待分类", "error"));
-    }
-    if (!entry.movable) memberships.append(badge(entry.move_blocked_reason || "只读"));
-    content.append(memberships);
-    card.append(check, content);
+    compactMembership.textContent = active.length
+      ? active.map((item) => item.public_id || "未编号").join(" / ")
+      : entry.is_boundary || entry.is_command ? "只读" : "未归档";
+    const time = document.createElement("span");
+    time.className = "message-compact-time";
+    time.textContent = dateTime(entry.created_at);
+    summary.append(identity, preview, compactMembership, time);
+
+    const content = document.createElement("div");
+    content.className = "message-expanded";
+    details.append(summary, content);
+    details.addEventListener("toggle", () => {
+      if (details.open && !details.dataset.loaded) {
+        renderMessageExpanded(content, entry);
+        details.dataset.loaded = "1";
+      }
+    });
+    card.append(check, details);
     list.append(card);
   }
 
@@ -636,18 +620,70 @@ function renderMessages() {
   updateMessageSelection();
 }
 
+function renderMessageExpanded(content, entry) {
+  const meta = document.createElement("div");
+  meta.className = "message-meta";
+  for (const value of [
+    entry.umo,
+    entry.platform_message_id ? `消息 ID ${entry.platform_message_id}` : "",
+    entry.parent_event_id ? `回复 #${entry.parent_event_id}` : "",
+    entry.effective_kind ? `分类 ${entry.effective_kind}` : "",
+    entry.model_id ? `模型 ${entry.model_id}` : "",
+  ].filter(Boolean)) {
+    const span = document.createElement("span");
+    span.textContent = value;
+    meta.append(span);
+  }
+  const text = document.createElement("p");
+  text.className = "message-body";
+  text.textContent = entry.text || (entry.attachments?.length ? "[附件消息]" : "[空消息]");
+  content.append(meta, text);
+  for (const attachment of entry.attachments || []) {
+    content.append(renderAttachment(attachment));
+  }
+
+  const memberships = document.createElement("div");
+  memberships.className = "message-memberships";
+  const active = activeMemberships(entry);
+  if (!active.length && !entry.is_boundary && !entry.is_command) {
+    memberships.append(badge("未归档", "warn"));
+  }
+  for (const membership of entry.memberships || []) {
+    const relation = relationLabel(membership.relation);
+    const label = `${membership.public_id || "未编号"} · ${relation}${membership.deleted_at ? " · 已删除" : ""}`;
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = `membership-chip ${membership.relation === "excluded" ? "excluded" : ""}`;
+    chip.textContent = label;
+    chip.title = membership.title || label;
+    chip.addEventListener("click", () => openDetail(membership.question_uuid));
+    memberships.append(chip);
+  }
+  if (entry.classification_status && entry.classification_status !== "DONE") {
+    const pending = badge("待分类", "error");
+    pending.title = entry.classification_error || "分类模型调用失败";
+    memberships.append(pending);
+  }
+  if (!entry.movable) memberships.append(badge(entry.move_blocked_reason || "只读"));
+  content.append(memberships);
+}
+
 function selectedMessageIds() {
   return [...document.querySelectorAll(".message-checkbox:checked")]
     .map((input) => input.dataset.messageId);
 }
 
+function selectedMessageUmos() {
+  const selected = new Set(selectedMessageIds());
+  return new Set(
+    state.messages.filter((item) => selected.has(String(item.id))).map((item) => item.umo),
+  );
+}
+
 function renderMessageTargets() {
   const select = $("message-target");
   const previous = select.value;
-  const selected = new Set(selectedMessageIds());
-  const umos = new Set(
-    state.messages.filter((item) => selected.has(String(item.id))).map((item) => item.umo),
-  );
+  const umos = selectedMessageUmos();
   const targets = state.messageTargets.filter(
     (item) => umos.size === 0 || (umos.size === 1 && umos.has(item.umo)),
   );
@@ -670,6 +706,7 @@ function updateMessageSelection() {
   $("message-select-all").checked = all.length > 0 && selected.length === all.length;
   $("message-select-all").indeterminate = selected.length > 0 && selected.length < all.length;
   renderMessageTargets();
+  $("message-create").disabled = selected.length === 0 || selectedMessageUmos().size !== 1;
   $("message-assign").disabled = selected.length === 0 || !$("message-target").value;
   $("message-unarchive").disabled = selected.length === 0;
 }
@@ -678,13 +715,15 @@ async function runMessageAction(action) {
   const ids = selectedMessageIds();
   if (!ids.length) return;
   const assign = action === "assign";
+  const create = action === "create";
   const target = $("message-target").value;
   if (assign && !target) return;
-  const verb = assign ? "归入所选题目" : "设为未归档";
+  const verb = create ? "归档为一道新题目" : assign ? "归入所选题目" : "设为未归档";
   if (!await confirmAction(
     `确认把选中的 ${ids.length} 条消息按完整问答轮次${verb}？受影响题目会自动使用调整后的当前归属重新整理，原始事件和旧关系审计不会丢失。`,
     "确认调整",
   )) return;
+  $("message-create").disabled = true;
   $("message-assign").disabled = true;
   $("message-unarchive").disabled = true;
   try {
@@ -694,7 +733,9 @@ async function runMessageAction(action) {
       question_uuid: assign ? target : "",
     });
     const result = response.result || {};
-    toast(`已调整 ${result.event_count || ids.length} 条轮次消息，受影响题目将重新整理`);
+    toast(create
+      ? `已建立新题目并提交整理，共收录 ${result.event_count || ids.length} 条轮次消息`
+      : `已调整 ${result.event_count || ids.length} 条轮次消息，受影响题目将重新整理`);
     await Promise.all([loadOverview(), loadQuestions(), loadMessages()]);
   } catch (error) {
     toast(error.message || "消息归属调整失败", true);
@@ -915,11 +956,17 @@ async function actOnQuestion(action) {
     `确认重新归档 ${state.active.public_id || "这道题"}？将严格使用“全部消息”页面调整后的当前有效归属再次调用整理模型；成功后替换展示内容并保留旧版本。`,
     "开始归档",
   )) return;
+  if (action === "rearchive_new" && !await confirmAction(
+    `确认把 ${state.active.public_id || "这条删除记录"} 当前拥有的全部有效消息归档为一道新题目？新题会获得新的 UUID 和题号，旧删除记录继续保留用于审计。`,
+    "建立新题目",
+  )) return;
   const actionButtons = [...$("detail-actions").querySelectorAll("button")];
   actionButtons.forEach((button) => { button.disabled = true; });
   try {
     await apiPost(`questions/${encodeURIComponent(state.active.uuid)}/action`, { action });
-    toast(action === "rearchive" ? "已提交重新归档" : "操作成功");
+    toast(action === "rearchive"
+      ? "已提交重新归档"
+      : action === "rearchive_new" ? "已建立新题目并提交归档" : "操作成功");
     closeDetail();
     await Promise.all([loadOverview(), loadQuestions()]);
   } catch (error) {
@@ -963,6 +1010,7 @@ $("message-select-all").addEventListener("change", (event) => {
   updateMessageSelection();
 });
 $("message-target").addEventListener("change", updateMessageSelection);
+$("message-create").addEventListener("click", () => runMessageAction("create"));
 $("message-assign").addEventListener("click", () => runMessageAction("assign"));
 $("message-unarchive").addEventListener("click", () => runMessageAction("unarchive"));
 $("messages-prev").addEventListener("click", () => {

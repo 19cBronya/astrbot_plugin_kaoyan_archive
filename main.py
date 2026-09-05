@@ -25,7 +25,7 @@ from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.11.0"
+PLUGIN_VERSION = "0.11.1"
 INLINE_IMAGE_MIME_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"}
 )
@@ -594,7 +594,7 @@ class KaoyanArchivePlugin(Star):
         if not isinstance(payload, dict):
             return error_response("request body must be an object", status_code=400)
         action = str(payload.get("action") or "")
-        if action not in {"assign", "unarchive"}:
+        if action not in {"assign", "unarchive", "create"}:
             return error_response("unsupported message action", status_code=400)
         raw_ids = payload.get("ids")
         if not isinstance(raw_ids, list) or not raw_ids or len(raw_ids) > 100:
@@ -617,6 +617,7 @@ class KaoyanArchivePlugin(Star):
                 event_ids=event_ids,
                 question_uuid=question_uuid,
                 editor=str(request.username or "dashboard"),
+                create_new=action == "create",
             )
         except ValueError as exc:
             return error_response(str(exc), status_code=409)
@@ -848,6 +849,35 @@ class KaoyanArchivePlugin(Star):
             changed = await self.store.rearchive_question_by_uuid(question_uuid)
             if changed:
                 self._schedule_archive(question_uuid, notify=False)
+        elif action == "rearchive_new":
+            detail = await self.store.question_detail(question_uuid)
+            if not detail or detail.get("deleted_at") is None:
+                return error_response(
+                    "only a deleted question can be archived as a new question",
+                    status_code=409,
+                )
+            source = await self.store.question_source(question_uuid)
+            event_ids = [
+                int(item["id"])
+                for item in (source or {}).get("events", [])
+                if item.get("direction") in {"user", "assistant"}
+            ]
+            if not event_ids:
+                return error_response(
+                    "deleted question has no effective messages", status_code=409
+                )
+            try:
+                reassigned = await self.store.reassign_message_turns(
+                    event_ids=event_ids,
+                    question_uuid=None,
+                    editor=str(request.username or "dashboard"),
+                    create_new=True,
+                )
+            except ValueError as exc:
+                return error_response(str(exc), status_code=409)
+            for affected_uuid in reassigned["queued_questions"]:
+                self._schedule_archive(affected_uuid, notify=False)
+            changed = True
         else:
             return error_response("unsupported action", status_code=400)
         if not changed:
@@ -858,7 +888,10 @@ class KaoyanArchivePlugin(Star):
             action,
             question_uuid,
         )
-        return json_response({"saved": True, "action": action})
+        response = {"saved": True, "action": action}
+        if action == "rearchive_new":
+            response["created_question_uuid"] = reassigned["created_question_uuid"]
+        return json_response(response)
 
     def _should_process(self, event: AstrMessageEvent) -> bool:
         return (
