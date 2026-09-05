@@ -232,13 +232,16 @@ def test_schema_migrates_existing_questions_for_derived_archive_fields(tmp_path:
     with sqlite3.connect(store.db_path) as db:
         db.execute("ALTER TABLE questions DROP COLUMN knowledge_points_json")
         db.execute("ALTER TABLE questions DROP COLUMN overview")
-        db.execute("DELETE FROM schema_migrations WHERE version IN (2,3,4,5)")
+        db.execute("DELETE FROM schema_migrations WHERE version IN (2,3,4,5,6)")
 
     asyncio.run(store.initialize())
     detail = asyncio.run(store.question_detail(question["uuid"]))
 
     with sqlite3.connect(store.db_path) as db:
         columns = {row[1] for row in db.execute("PRAGMA table_info(questions)")}
+        archive_job_columns = {
+            row[1] for row in db.execute("PRAGMA table_info(archive_jobs)")
+        }
         versions = {row[0] for row in db.execute("SELECT version FROM schema_migrations")}
         tables = {
             row[0]
@@ -246,7 +249,8 @@ def test_schema_migrates_existing_questions_for_derived_archive_fields(tmp_path:
         }
     assert "knowledge_points_json" in columns
     assert "overview" in columns
-    assert 5 in versions
+    assert "rerun_requested" in archive_job_columns
+    assert 6 in versions
     assert "question_revisions" in tables
     assert {"classification_jobs", "classification_revisions"} <= tables
     assert detail
@@ -662,3 +666,137 @@ def test_unarchived_follow_up_can_be_attached_to_existing_question(tmp_path: Pat
         store.create_question_interval(umo=umo, boundary_event_id=second_boundary)
     )
     assert duplicate and duplicate["status"] == "EMPTY"
+
+
+def test_late_answer_is_moved_from_wrong_interval_to_its_parent_question(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    umo = "default:FriendMessage:late-answer-recovery"
+    parent_id = add_event(store, umo=umo, direction="user", text="第一题追问")
+    first_boundary = add_event(
+        store, umo=umo, direction="user", text="我问完了", body_text="", boundary=True
+    )
+    first = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=first_boundary)
+    )
+    assert first
+    asyncio.run(store.claim_job(first["uuid"]))
+    first = asyncio.run(
+        store.complete_question(
+            question_uuid=first["uuid"],
+            subject="数学",
+            title="第一题",
+            summary="第一题旧总结",
+            provider_id="archive-provider",
+            model_id="archive-model",
+            prompt_version="test",
+        )
+    )
+    late_answer_id = asyncio.run(
+        store.add_event(
+            umo=umo,
+            direction="assistant",
+            platform_message_id="late-answer",
+            parent_event_id=parent_id,
+            sender_id="bot",
+            sender_name="bot",
+            kind="assistant",
+            text="这是迟到的第一题回答。",
+            body_text="这是迟到的第一题回答。",
+            components=[],
+            raw={},
+            is_command=False,
+            is_boundary=False,
+            boundary_rule="",
+            created_at=3,
+            provider_id="umo-provider",
+            model_id="umo-model",
+            prompt_version="runtime",
+        )
+    )
+    add_event(store, umo=umo, direction="user", text="第二题")
+    second_boundary = add_event(
+        store, umo=umo, direction="user", text="又问完了", body_text="", boundary=True
+    )
+    second = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=second_boundary)
+    )
+    assert second
+    second_before = asyncio.run(store.question_source(second["uuid"]))
+    assert second_before
+    assert late_answer_id in [event["id"] for event in second_before["events"]]
+
+    affected = asyncio.run(store.reconcile_late_answers())
+
+    assert affected == sorted([first["uuid"], second["uuid"]])
+    first_source = asyncio.run(store.question_source(first["uuid"]))
+    second_source = asyncio.run(store.question_source(second["uuid"]))
+    assert first_source and second_source
+    assert late_answer_id in [event["id"] for event in first_source["events"]]
+    assert late_answer_id not in [event["id"] for event in second_source["events"]]
+    second_detail = asyncio.run(store.question_detail(second["uuid"]))
+    assert second_detail
+    late_in_second = next(
+        event for event in second_detail["events"] if event["id"] == late_answer_id
+    )
+    assert late_in_second["relation"] == "excluded"
+    assert asyncio.run(store.reconcile_late_answers()) == []
+
+
+def test_late_answer_during_running_archive_requests_a_second_pass(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    umo = "default:FriendMessage:late-answer-rerun"
+    parent_id = add_event(store, umo=umo, direction="user", text="需要慢回答的问题")
+    boundary_id = add_event(
+        store, umo=umo, direction="user", text="我问完了", body_text="", boundary=True
+    )
+    question = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=boundary_id)
+    )
+    assert question and asyncio.run(store.claim_job(question["uuid"]))
+    late_answer_id = asyncio.run(
+        store.add_event(
+            umo=umo,
+            direction="assistant",
+            platform_message_id="answer-during-archive",
+            parent_event_id=parent_id,
+            sender_id="bot",
+            sender_name="bot",
+            kind="assistant",
+            text="终于返回的完整回答。",
+            body_text="终于返回的完整回答。",
+            components=[],
+            raw={},
+            is_command=False,
+            is_boundary=False,
+            boundary_rule="",
+            created_at=3,
+            provider_id="umo-provider",
+            model_id="umo-model",
+            prompt_version="runtime",
+        )
+    )
+
+    affected = asyncio.run(store.reconcile_late_answers(late_answer_id))
+    stale_completion = asyncio.run(
+        store.complete_question(
+            question_uuid=question["uuid"],
+            subject="数学",
+            title="第一次整理",
+            summary="第一次整理尚未看到迟到回答。",
+            provider_id="archive-provider",
+            model_id="archive-model",
+            prompt_version="first-pass",
+        )
+    )
+
+    assert affected == [question["uuid"]]
+    assert stale_completion["status"] == "FINALIZING"
+    assert asyncio.run(store.archive_job_pending(question["uuid"])) is True
+    assert asyncio.run(store.claim_job(question["uuid"])) is True
+    source = asyncio.run(store.question_source(question["uuid"]))
+    assert source
+    assert late_answer_id in [event["id"] for event in source["events"]]

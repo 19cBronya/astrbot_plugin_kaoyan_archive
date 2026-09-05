@@ -574,6 +574,55 @@ def test_page_can_attach_unarchived_follow_up_to_existing_question(
     assert scheduled == [("existing-question", False)]
 
 
+def test_agent_done_reconciles_late_answer_with_parent_question(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    umo = "default:FriendMessage:10001"
+    plugin = module.KaoyanArchivePlugin(
+        _FakeContext(), _Config(enabled=True, umo_whitelist=[umo])
+    )
+    saved = {}
+    reconciled = []
+    scheduled = []
+
+    async def add_event(**kwargs):
+        saved.update(kwargs)
+        return 99
+
+    async def reconcile_late_answers(event_id):
+        reconciled.append(event_id)
+        return ["parent-question"]
+
+    plugin.store.add_event = add_event
+    plugin.store.reconcile_late_answers = reconcile_late_answers
+    plugin._schedule_archive = lambda question_uuid, notify: scheduled.append(
+        (question_uuid, notify)
+    )
+    extras = {
+        f"{module.PLUGIN_NAME}:event_id": 18,
+        f"{module.PLUGIN_NAME}:analysis": {"kind": "question", "intent": "follow_up"},
+    }
+    event = SimpleNamespace(
+        is_private_chat=lambda: True,
+        unified_msg_origin=umo,
+        get_extra=lambda key, default=None: extras.get(key, default),
+        get_self_id=lambda: "bot",
+    )
+    response = SimpleNamespace(
+        id="late-response",
+        completion_text="迟到的完整回答",
+        raw_completion=SimpleNamespace(model="answer-model"),
+    )
+
+    asyncio.run(plugin.capture_agent_response(event, None, response))
+
+    assert saved["parent_event_id"] == 18
+    assert saved["text"] == "迟到的完整回答"
+    assert reconciled == [99]
+    assert scheduled == [("parent-question", False)]
+
+
 def test_registered_framework_command_skips_classifier(monkeypatch, tmp_path: Path) -> None:
     module = _load_plugin_module(monkeypatch, tmp_path)
     context = _FakeContext()

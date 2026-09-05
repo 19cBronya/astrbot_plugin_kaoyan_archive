@@ -25,7 +25,7 @@ from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.10.0"
+PLUGIN_VERSION = "0.10.1"
 INLINE_IMAGE_MIME_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"}
 )
@@ -156,7 +156,7 @@ class KaoyanArchivePlugin(Star):
         completion = getattr(resp, "completion_text", "") or ""
         provider_id = await self._safe_current_provider(event.unified_msg_origin)
         model_id = self._extract_model_id(resp, provider_id)
-        await self.store.add_event(
+        assistant_event_id = await self.store.add_event(
             umo=event.unified_msg_origin,
             direction="assistant",
             platform_message_id=str(getattr(resp, "id", "") or ""),
@@ -178,6 +178,11 @@ class KaoyanArchivePlugin(Star):
             model_id=model_id,
             prompt_version="astrbot-runtime",
         )
+        affected_questions = await self.store.reconcile_late_answers(
+            assistant_event_id
+        )
+        for question_uuid in affected_questions:
+            self._schedule_archive(question_uuid, notify=False)
 
     @filter.command_group("kaoyan")
     def kaoyan_commands(self):
@@ -319,7 +324,9 @@ class KaoyanArchivePlugin(Star):
 
     async def _recover_pending_jobs(self) -> None:
         await self.store.recover_classification_jobs()
-        for question_uuid in await self.store.recover_pending_jobs():
+        question_ids = set(await self.store.recover_pending_jobs())
+        question_ids.update(await self.store.reconcile_late_answers())
+        for question_uuid in sorted(question_ids):
             self._schedule_archive(question_uuid, notify=False)
 
     def _schedule_archive(self, question_uuid: str, notify: bool) -> None:
@@ -335,7 +342,10 @@ class KaoyanArchivePlugin(Star):
 
     async def _run_archive(self, question_uuid: str, notify: bool) -> None:
         try:
-            result = await self.archive_service.finalize(question_uuid)
+            while True:
+                result = await self.archive_service.finalize(question_uuid)
+                if not await self.store.archive_job_pending(question_uuid):
+                    break
             if notify and self._cfg_bool("send_archive_notice", True):
                 await self.context.send_message(
                     result.umo,

@@ -1,7 +1,7 @@
 name: astrbot_plugin_kaoyan_archive
 display_name: 考研答疑归档
 desc: 仅在白名单私聊 UMO 中旁路记录对话，由 LLM 判断归档边界并分类编号归档题目；题库页面支持离线公式渲染。
-version: v0.10.0
+version: v0.10.1
 author: 19cBronya
 repo: https://github.com/19cBronya/astrbot_plugin_kaoyan_archive
 astrbot_version: ">=4.27.2,<5"

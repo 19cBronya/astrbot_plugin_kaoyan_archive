@@ -12,7 +12,7 @@ from .attachments import CapturedAttachment
 from .utils import canonical_json, utc_timestamp
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class ArchiveStore:
@@ -175,6 +175,8 @@ class ArchiveStore:
                     question_uuid TEXT PRIMARY KEY REFERENCES questions(uuid),
                     status TEXT NOT NULL,
                     attempts INTEGER NOT NULL DEFAULT 0,
+                    rerun_requested INTEGER NOT NULL DEFAULT 0
+                        CHECK (rerun_requested IN (0, 1)),
                     error TEXT NOT NULL DEFAULT '',
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
@@ -270,6 +272,15 @@ class ArchiveStore:
                             question["uuid"],
                         ),
                     )
+            archive_job_columns = {
+                str(row["name"])
+                for row in db.execute("PRAGMA table_info(archive_jobs)").fetchall()
+            }
+            if "rerun_requested" not in archive_job_columns:
+                db.execute(
+                    "ALTER TABLE archive_jobs ADD COLUMN rerun_requested "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (rerun_requested IN (0, 1))"
+                )
             db.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
                 (SCHEMA_VERSION, utc_timestamp()),
@@ -618,6 +629,183 @@ class ArchiveStore:
                 "message_count": len(unique_ids),
                 "event_count": len(attached_ids),
             }
+
+    async def reconcile_late_answers(
+        self, assistant_event_id: int | None = None
+    ) -> list[str]:
+        return self._reconcile_late_answers_sync(assistant_event_id)
+
+    def _reconcile_late_answers_sync(
+        self, assistant_event_id: int | None
+    ) -> list[str]:
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            params: tuple[Any, ...] = ()
+            event_filter = ""
+            if assistant_event_id is not None:
+                event_filter = "AND assistant.id=?"
+                params = (int(assistant_event_id),)
+            answers = db.execute(
+                f"""
+                SELECT assistant.id,assistant.parent_event_id
+                FROM events assistant
+                WHERE assistant.direction='assistant'
+                  AND assistant.parent_event_id IS NOT NULL
+                  {event_filter}
+                  AND EXISTS(
+                      SELECT 1 FROM question_events parent_qe
+                      JOIN questions parent_q ON parent_q.uuid=parent_qe.question_uuid
+                      WHERE parent_qe.event_id=assistant.parent_event_id
+                        AND parent_qe.relation IN ('primary','supplement')
+                        AND parent_q.deleted_at IS NULL
+                  )
+                ORDER BY assistant.id
+                """,
+                params,
+            ).fetchall()
+            changed_questions: set[str] = set()
+            for answer in answers:
+                answer_id = int(answer["id"])
+                parent_id = int(answer["parent_event_id"])
+                target_rows = db.execute(
+                    """
+                    SELECT DISTINCT q.uuid
+                    FROM question_events qe
+                    JOIN questions q ON q.uuid=qe.question_uuid
+                    WHERE qe.event_id=?
+                      AND qe.relation IN ('primary','supplement')
+                      AND q.deleted_at IS NULL
+                    """,
+                    (parent_id,),
+                ).fetchall()
+                targets = {str(row["uuid"]) for row in target_rows}
+                if not targets:
+                    continue
+                current_rows = db.execute(
+                    """
+                    SELECT question_uuid,ordinal FROM question_events
+                    WHERE event_id=? AND relation='answer'
+                    """,
+                    (answer_id,),
+                ).fetchall()
+                current = {
+                    str(row["question_uuid"]): int(row["ordinal"])
+                    for row in current_rows
+                }
+                removed_from: list[str] = []
+                linked_to: list[str] = []
+                for question_uuid, ordinal in current.items():
+                    if question_uuid in targets:
+                        continue
+                    db.execute(
+                        """
+                        DELETE FROM question_events
+                        WHERE question_uuid=? AND event_id=? AND relation='answer'
+                        """,
+                        (question_uuid, answer_id),
+                    )
+                    db.execute(
+                        """
+                        INSERT OR IGNORE INTO question_events(
+                            question_uuid,event_id,relation,ordinal
+                        ) VALUES(?,?,'excluded',?)
+                        """,
+                        (question_uuid, answer_id, ordinal),
+                    )
+                    changed_questions.add(question_uuid)
+                    removed_from.append(question_uuid)
+                for question_uuid in targets:
+                    if question_uuid in current:
+                        continue
+                    existing = db.execute(
+                        """
+                        SELECT ordinal FROM question_events
+                        WHERE question_uuid=? AND event_id=? AND relation='excluded'
+                        """,
+                        (question_uuid, answer_id),
+                    ).fetchone()
+                    if existing:
+                        ordinal = int(existing["ordinal"])
+                        db.execute(
+                            """
+                            DELETE FROM question_events
+                            WHERE question_uuid=? AND event_id=? AND relation='excluded'
+                            """,
+                            (question_uuid, answer_id),
+                        )
+                    else:
+                        ordinal = int(
+                            db.execute(
+                                """
+                                SELECT COALESCE(MAX(ordinal), -1) + 1 AS value
+                                FROM question_events WHERE question_uuid=?
+                                """,
+                                (question_uuid,),
+                            ).fetchone()["value"]
+                        )
+                    db.execute(
+                        """
+                        INSERT INTO question_events(
+                            question_uuid,event_id,relation,ordinal
+                        ) VALUES(?,?,'answer',?)
+                        """,
+                        (question_uuid, answer_id, ordinal),
+                    )
+                    changed_questions.add(question_uuid)
+                    linked_to.append(question_uuid)
+                if removed_from or linked_to:
+                    self._audit(
+                        db,
+                        "reconcile_late_answer",
+                        "event",
+                        str(answer_id),
+                        {
+                            "parent_event_id": parent_id,
+                            "linked_to": linked_to,
+                            "removed_from": removed_from,
+                        },
+                    )
+            for question_uuid in sorted(changed_questions):
+                db.execute(
+                    """
+                    UPDATE questions SET event_count=(
+                        SELECT COUNT(*) FROM question_events
+                        WHERE question_uuid=?
+                          AND relation IN ('primary','supplement','answer')
+                    ) WHERE uuid=?
+                    """,
+                    (question_uuid, question_uuid),
+                )
+                self._queue_after_relation_change(db, question_uuid)
+            db.commit()
+            return sorted(changed_questions)
+
+    def _queue_after_relation_change(
+        self, db: sqlite3.Connection, question_uuid: str
+    ) -> None:
+        row = db.execute(
+            """
+            SELECT q.status,aj.status AS job_status
+            FROM questions q
+            LEFT JOIN archive_jobs aj ON aj.question_uuid=q.uuid
+            WHERE q.uuid=? AND q.deleted_at IS NULL
+            """,
+            (question_uuid,),
+        ).fetchone()
+        if not row:
+            return
+        if row["status"] in {"ARCHIVED", "FINALIZE_FAILED"}:
+            self._retry_row(db, question_uuid, audit_action="late_answer_rearchive")
+        elif row["status"] == "FINALIZING" and row["job_status"] == "RUNNING":
+            db.execute(
+                """
+                UPDATE archive_jobs SET rerun_requested=1,updated_at=?
+                WHERE question_uuid=?
+                """,
+                (utc_timestamp(), question_uuid),
+            )
+        elif row["status"] == "FINALIZING" and row["job_status"] != "PENDING":
+            self._retry_row(db, question_uuid, audit_action="late_answer_rearchive")
 
     async def classification_event(self, event_id: int) -> dict[str, Any] | None:
         return self._classification_event_sync(event_id)
@@ -994,7 +1182,7 @@ class ArchiveStore:
                        EXISTS(
                            SELECT 1 FROM question_events qe
                            WHERE qe.event_id=e.id
-                             AND qe.relation IN ('primary','supplement')
+                             AND qe.relation IN ('primary','supplement','answer')
                        ) AS already_archived
                 FROM events e
                 WHERE e.umo=? AND e.id>? AND e.id<=?
@@ -1037,7 +1225,8 @@ class ArchiveStore:
                         and not (parent and parent["already_archived"])
                         and bool(str(row["text"] or "").strip() or row["has_attachment"])
                     ) if parent_kind else (
-                        not row["is_command"]
+                        not row["already_archived"]
+                        and not row["is_command"]
                         and bool(body_text.strip() or row["has_attachment"])
                         and not row["is_boundary"]
                     )
@@ -1256,6 +1445,13 @@ class ArchiveStore:
             if not question:
                 db.rollback()
                 raise ValueError("question not found")
+            job = db.execute(
+                "SELECT rerun_requested FROM archive_jobs WHERE question_uuid=?",
+                (question_uuid,),
+            ).fetchone()
+            rerun_requested = bool(job and job["rerun_requested"])
+            final_status = "FINALIZING" if rerun_requested else "ARCHIVED"
+            final_job_status = "PENDING" if rerun_requested else "DONE"
             public_id = question["public_id"]
             is_rearchive = bool(public_id)
             if not public_id:
@@ -1306,7 +1502,7 @@ class ArchiveStore:
                 """
                 UPDATE questions
                 SET public_id=?, subject=?, title=?, overview=?, summary=?,
-                    knowledge_points_json=?, status='ARCHIVED',
+                    knowledge_points_json=?, status=?,
                     provider_id=?, model_id=?, prompt_version=?, analysis_warning=?,
                     error='', archived_at=?
                 WHERE uuid=?
@@ -1318,6 +1514,7 @@ class ArchiveStore:
                     cleaned_overview,
                     cleaned_summary,
                     cleaned_points_json,
+                    final_status,
                     provider_id,
                     model_id,
                     prompt_version,
@@ -1327,15 +1524,24 @@ class ArchiveStore:
                 ),
             )
             db.execute(
-                "UPDATE archive_jobs SET status='DONE',error='',updated_at=? WHERE question_uuid=?",
-                (now, question_uuid),
+                """
+                UPDATE archive_jobs
+                SET status=?,rerun_requested=0,error='',updated_at=?
+                WHERE question_uuid=?
+                """,
+                (final_job_status, now, question_uuid),
             )
             self._audit(
                 db,
                 "archive",
                 "question",
                 question_uuid,
-                {"public_id": public_id, "subject": subject, "warning": warning},
+                {
+                    "public_id": public_id,
+                    "subject": subject,
+                    "warning": warning,
+                    "rerun_requested": rerun_requested,
+                },
             )
             db.commit()
             return dict(
@@ -1353,7 +1559,11 @@ class ArchiveStore:
                 (error[:4000], question_uuid),
             )
             db.execute(
-                "UPDATE archive_jobs SET status='FAILED',error=?,updated_at=? WHERE question_uuid=?",
+                """
+                UPDATE archive_jobs
+                SET status='FAILED',rerun_requested=0,error=?,updated_at=?
+                WHERE question_uuid=?
+                """,
                 (error[:4000], now, question_uuid),
             )
             self._audit(db, "archive_failed", "question", question_uuid, {"error": error[:1000]})
@@ -1373,6 +1583,20 @@ class ArchiveStore:
                     "SELECT question_uuid FROM archive_jobs WHERE status='PENDING'"
                 ).fetchall()
             ]
+
+    async def archive_job_pending(self, question_uuid: str) -> bool:
+        return self._archive_job_pending_sync(question_uuid)
+
+    def _archive_job_pending_sync(self, question_uuid: str) -> bool:
+        with self._lock, self._connect() as db:
+            row = db.execute(
+                """
+                SELECT 1 FROM archive_jobs
+                WHERE question_uuid=? AND status='PENDING'
+                """,
+                (question_uuid,),
+            ).fetchone()
+            return bool(row)
 
     async def retry_question(
         self, *, umo: str, public_id: str | None
@@ -1449,7 +1673,8 @@ class ArchiveStore:
             """
             INSERT INTO archive_jobs(question_uuid,status,created_at,updated_at)
             VALUES(?, 'PENDING', ?, ?)
-            ON CONFLICT(question_uuid) DO UPDATE SET status='PENDING',error='',updated_at=excluded.updated_at
+            ON CONFLICT(question_uuid) DO UPDATE SET
+                status='PENDING',rerun_requested=0,error='',updated_at=excluded.updated_at
             """,
             (question_uuid, now, now),
         )
