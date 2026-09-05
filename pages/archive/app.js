@@ -263,13 +263,6 @@ function renderDetailActions(detail) {
     actions.append(actionButton("重试归档", "primary", () => actOnQuestion("rearchive")));
   }
   if (detail.deleted_at) {
-    if ((detail.events || []).some((event) =>
-      ["primary", "supplement", "answer"].some((relation) =>
-        relationParts(event.relation).includes(relation),
-      ),
-    )) {
-      actions.append(actionButton("归档为新题目", "secondary", () => actOnQuestion("rearchive_new")));
-    }
     actions.append(actionButton("恢复题目", "primary", () => actOnQuestion("restore")));
   } else {
     actions.append(actionButton("软删除", "danger", () => actOnQuestion("delete")));
@@ -591,7 +584,9 @@ function renderMessages() {
     compactMembership.className = "message-compact-membership";
     const active = activeMemberships(entry);
     compactMembership.textContent = active.length
-      ? active.map((item) => item.public_id || "未编号").join(" / ")
+      ? active.map((item) =>
+        `${item.public_id || "未编号"}${item.deleted_at ? "（已删除）" : ""}`,
+      ).join(" / ")
       : entry.is_boundary || entry.is_command ? "只读" : "未归档";
     const time = document.createElement("span");
     time.className = "message-compact-time";
@@ -706,7 +701,6 @@ function updateMessageSelection() {
   $("message-select-all").checked = all.length > 0 && selected.length === all.length;
   $("message-select-all").indeterminate = selected.length > 0 && selected.length < all.length;
   renderMessageTargets();
-  $("message-create").disabled = selected.length === 0 || selectedMessageUmos().size !== 1;
   $("message-assign").disabled = selected.length === 0 || !$("message-target").value;
   $("message-unarchive").disabled = selected.length === 0;
 }
@@ -715,15 +709,13 @@ async function runMessageAction(action) {
   const ids = selectedMessageIds();
   if (!ids.length) return;
   const assign = action === "assign";
-  const create = action === "create";
   const target = $("message-target").value;
   if (assign && !target) return;
-  const verb = create ? "归档为一道新题目" : assign ? "归入所选题目" : "设为未归档";
+  const verb = assign ? "归入所选题目" : "设为未归档";
   if (!await confirmAction(
     `确认把选中的 ${ids.length} 条消息按完整问答轮次${verb}？受影响题目会自动使用调整后的当前归属重新整理，原始事件和旧关系审计不会丢失。`,
     "确认调整",
   )) return;
-  $("message-create").disabled = true;
   $("message-assign").disabled = true;
   $("message-unarchive").disabled = true;
   try {
@@ -733,9 +725,7 @@ async function runMessageAction(action) {
       question_uuid: assign ? target : "",
     });
     const result = response.result || {};
-    toast(create
-      ? `已建立新题目并提交整理，共收录 ${result.event_count || ids.length} 条轮次消息`
-      : `已调整 ${result.event_count || ids.length} 条轮次消息，受影响题目将重新整理`);
+    toast(`已调整 ${result.event_count || ids.length} 条轮次消息，受影响题目将重新整理`);
     await Promise.all([loadOverview(), loadQuestions(), loadMessages()]);
   } catch (error) {
     toast(error.message || "消息归属调整失败", true);
@@ -956,17 +946,11 @@ async function actOnQuestion(action) {
     `确认重新归档 ${state.active.public_id || "这道题"}？将严格使用“全部消息”页面调整后的当前有效归属再次调用整理模型；成功后替换展示内容并保留旧版本。`,
     "开始归档",
   )) return;
-  if (action === "rearchive_new" && !await confirmAction(
-    `确认把 ${state.active.public_id || "这条删除记录"} 当前拥有的全部有效消息归档为一道新题目？新题会获得新的 UUID 和题号，旧删除记录继续保留用于审计。`,
-    "建立新题目",
-  )) return;
   const actionButtons = [...$("detail-actions").querySelectorAll("button")];
   actionButtons.forEach((button) => { button.disabled = true; });
   try {
     await apiPost(`questions/${encodeURIComponent(state.active.uuid)}/action`, { action });
-    toast(action === "rearchive"
-      ? "已提交重新归档"
-      : action === "rearchive_new" ? "已建立新题目并提交归档" : "操作成功");
+    toast(action === "rearchive" ? "已提交重新归档" : "操作成功");
     closeDetail();
     await Promise.all([loadOverview(), loadQuestions()]);
   } catch (error) {
@@ -1010,7 +994,6 @@ $("message-select-all").addEventListener("change", (event) => {
   updateMessageSelection();
 });
 $("message-target").addEventListener("change", updateMessageSelection);
-$("message-create").addEventListener("click", () => runMessageAction("create"));
 $("message-assign").addEventListener("click", () => runMessageAction("assign"));
 $("message-unarchive").addEventListener("click", () => runMessageAction("unarchive"));
 $("messages-prev").addEventListener("click", () => {

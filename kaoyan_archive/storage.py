@@ -580,13 +580,11 @@ class ArchiveStore:
         event_ids: list[int],
         question_uuid: str | None,
         editor: str,
-        create_new: bool = False,
     ) -> dict[str, Any]:
         return self._reassign_message_turns_sync(
             event_ids=event_ids,
             question_uuid=question_uuid,
             editor=editor,
-            create_new=create_new,
         )
 
     def _reassign_message_turns_sync(
@@ -595,13 +593,10 @@ class ArchiveStore:
         event_ids: list[int],
         question_uuid: str | None,
         editor: str,
-        create_new: bool,
     ) -> dict[str, Any]:
         selected_ids = sorted({int(event_id) for event_id in event_ids})
         if not selected_ids:
             raise ValueError("no messages selected")
-        if create_new and question_uuid:
-            raise ValueError("new question cannot also specify an existing target")
         with self._lock, self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             target = None
@@ -656,72 +651,6 @@ class ArchiveStore:
                 f"SELECT * FROM events WHERE id IN ({expanded_placeholders}) ORDER BY id",
                 expanded,
             ).fetchall()
-            created_question_uuid = ""
-            if create_new:
-                umos = {str(row["umo"]) for row in rows}
-                if len(umos) != 1:
-                    db.rollback()
-                    raise ValueError("new question messages must use the same UMO")
-                now = utc_timestamp()
-                boundary_cursor = db.execute(
-                    """
-                    INSERT INTO events(
-                        event_uuid,umo,direction,platform_message_id,parent_event_id,
-                        sender_id,sender_name,kind,text,body_text,components_json,
-                        raw_json,is_command,is_boundary,boundary_rule,created_at,
-                        provider_id,model_id,prompt_version,inserted_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    """,
-                    (
-                        uuid.uuid4().hex,
-                        next(iter(umos)),
-                        "system",
-                        "",
-                        None,
-                        "dashboard",
-                        editor[:100] or "dashboard",
-                        "boundary",
-                        "由归档页面手动建立新题目",
-                        "",
-                        "[]",
-                        canonical_json(
-                            {
-                                "source": "dashboard",
-                                "action": "create_question_from_messages",
-                                "selected_event_ids": selected_ids,
-                            }
-                        ),
-                        1,
-                        1,
-                        "dashboard_manual_archive",
-                        now,
-                        "local",
-                        "dashboard",
-                        "manual-boundary-v1",
-                        now,
-                    ),
-                )
-                boundary_event_id = int(boundary_cursor.lastrowid)
-                created_question_uuid = str(uuid.uuid4())
-                question_uuid = created_question_uuid
-                db.execute(
-                    """
-                    INSERT INTO questions(
-                        uuid,umo,status,start_event_id,boundary_event_id,event_count,
-                        is_manual,created_at,archived_at
-                    ) VALUES(?,?,'ABANDONED',?,?,0,1,?,NULL)
-                    """,
-                    (
-                        question_uuid,
-                        next(iter(umos)),
-                        min(expanded),
-                        boundary_event_id,
-                        now,
-                    ),
-                )
-                target = db.execute(
-                    "SELECT * FROM questions WHERE uuid=?", (question_uuid,)
-                ).fetchone()
             if target and any(str(row["umo"]) != str(target["umo"]) for row in rows):
                 db.rollback()
                 raise ValueError("messages and target question must use the same UMO")
@@ -779,9 +708,7 @@ class ArchiveStore:
                         (question_uuid, event_id),
                     )
                     relation = (
-                        target_relations.get(
-                            event_id, "primary" if create_new else "supplement"
-                        )
+                        target_relations.get(event_id, "supplement")
                         if row["direction"] == "user"
                         else "answer"
                     )
@@ -795,15 +722,6 @@ class ArchiveStore:
                         (question_uuid, event_id, relation, ordinal),
                     )
                     ordinal += 1
-                if create_new:
-                    db.execute(
-                        """
-                        INSERT INTO question_events(
-                            question_uuid,event_id,relation,ordinal
-                        ) VALUES(?,?,'boundary',?)
-                        """,
-                        (question_uuid, boundary_event_id, ordinal),
-                    )
 
             queued: list[str] = []
             abandoned: list[str] = []
@@ -846,11 +764,7 @@ class ArchiveStore:
                     self._queue_after_relation_change(db, affected_uuid)
                     queued.append(affected_uuid)
 
-            action = (
-                "create_question_from_message_turns"
-                if create_new
-                else "assign_message_turns" if question_uuid else "unarchive_message_turns"
-            )
+            action = "assign_message_turns" if question_uuid else "unarchive_message_turns"
             self._audit(
                 db,
                 action,
@@ -870,7 +784,6 @@ class ArchiveStore:
                 "event_count": len(expanded),
                 "event_ids": expanded,
                 "question_uuid": question_uuid or "",
-                "created_question_uuid": created_question_uuid,
                 "affected_questions": sorted(affected),
                 "queued_questions": queued,
                 "abandoned_questions": abandoned,

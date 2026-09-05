@@ -268,59 +268,6 @@ def test_page_rearchive_action_queues_existing_question(monkeypatch, tmp_path: P
     assert scheduled == [("question-uuid", False)]
 
 
-def test_deleted_question_can_be_archived_as_a_new_question_from_detail(
-    monkeypatch, tmp_path: Path
-) -> None:
-    module = _load_plugin_module(monkeypatch, tmp_path)
-    plugin = module.KaoyanArchivePlugin(_FakeContext(), _Config())
-    captured = {}
-    scheduled = []
-
-    async def request_json(default=None):
-        return {"action": "rearchive_new"}
-
-    async def question_detail(question_uuid):
-        return {"uuid": question_uuid, "deleted_at": 123.0}
-
-    async def question_source(question_uuid):
-        return {
-            "events": [
-                {"id": 31, "direction": "user"},
-                {"id": 32, "direction": "assistant"},
-            ]
-        }
-
-    async def reassign_message_turns(**kwargs):
-        captured.update(kwargs)
-        return {
-            "created_question_uuid": "new-question",
-            "queued_questions": ["new-question"],
-        }
-
-    module.request.json = request_json
-    plugin.store.question_detail = question_detail
-    plugin.store.question_source = question_source
-    plugin.store.reassign_message_turns = reassign_message_turns
-    plugin._schedule_archive = lambda question_uuid, notify: scheduled.append(
-        (question_uuid, notify)
-    )
-
-    result = asyncio.run(plugin.web_question_action("deleted-question"))
-
-    assert result == {
-        "saved": True,
-        "action": "rearchive_new",
-        "created_question_uuid": "new-question",
-    }
-    assert captured == {
-        "event_ids": [31, 32],
-        "question_uuid": None,
-        "editor": "tester",
-        "create_new": True,
-    }
-    assert scheduled == [("new-question", False)]
-
-
 def test_authenticated_image_preview_is_content_addressed_and_path_safe(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -667,54 +614,11 @@ def test_page_can_reassign_complete_message_turns(monkeypatch, tmp_path: Path) -
         "event_ids": [17],
         "question_uuid": "target-question",
         "editor": "tester",
-        "create_new": False,
     }
     assert scheduled == [
         ("old-question", False),
         ("target-question", False),
     ]
-
-
-def test_page_can_create_new_question_from_deleted_message_relations(
-    monkeypatch, tmp_path: Path
-) -> None:
-    module = _load_plugin_module(monkeypatch, tmp_path)
-    plugin = module.KaoyanArchivePlugin(_FakeContext(), _Config())
-    captured = {}
-    scheduled = []
-
-    async def request_json(default=None):
-        return {"action": "create", "ids": ["23"], "question_uuid": ""}
-
-    async def reassign_message_turns(**kwargs):
-        captured.update(kwargs)
-        return {
-            "selected_event_count": 1,
-            "event_count": 2,
-            "event_ids": [23, 24],
-            "question_uuid": "new-question",
-            "created_question_uuid": "new-question",
-            "affected_questions": ["deleted-question", "new-question"],
-            "queued_questions": ["new-question"],
-            "abandoned_questions": [],
-        }
-
-    module.request.json = request_json
-    plugin.store.reassign_message_turns = reassign_message_turns
-    plugin._schedule_archive = lambda question_uuid, notify: scheduled.append(
-        (question_uuid, notify)
-    )
-
-    result = asyncio.run(plugin.web_messages_action())
-
-    assert result["result"]["created_question_uuid"] == "new-question"
-    assert captured == {
-        "event_ids": [23],
-        "question_uuid": None,
-        "editor": "tester",
-        "create_new": True,
-    }
-    assert scheduled == [("new-question", False)]
 
 
 def test_agent_done_reconciles_late_answer_with_parent_question(

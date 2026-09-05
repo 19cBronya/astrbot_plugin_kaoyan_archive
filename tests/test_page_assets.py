@@ -59,16 +59,15 @@ def test_page_has_all_messages_membership_manager() -> None:
     assert 'id="messages-view"' in document
     assert 'id="message-ownership"' in document
     assert 'id="message-target"' in document
-    assert 'id="message-create"' in document
+    assert 'id="message-create"' not in document
     assert 'id="message-unarchive"' in document
     assert '{ label: "全部消息", value: stats.events ?? 0, view: "messages" }' in script
     assert 'apiPost("messages/action"' in script
     assert 'runMessageAction("assign")' in script
-    assert 'runMessageAction("create")' in script
     assert 'runMessageAction("unarchive")' in script
     assert 'document.createElement("details")' in script
     assert 'details.addEventListener("toggle"' in script
-    assert 'actOnQuestion("rearchive_new")' in script
+    assert 'actOnQuestion("rearchive_new")' not in script
     assert 'repair: "unarchived"' not in script
 
 

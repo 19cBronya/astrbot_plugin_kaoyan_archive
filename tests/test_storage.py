@@ -989,7 +989,7 @@ def test_control_messages_cannot_be_reassigned(tmp_path: Path) -> None:
         )
 
 
-def test_deleted_question_messages_can_be_archived_as_a_new_question(
+def test_deleted_question_messages_remain_selectable_and_can_move_to_another_question(
     tmp_path: Path,
 ) -> None:
     store = make_store(tmp_path)
@@ -1037,61 +1037,56 @@ def test_deleted_question_messages_can_be_archived_as_a_new_question(
     )
     assert archived_old["public_id"] == "数学0001"
     assert asyncio.run(store.soft_delete_question(old["uuid"], True)) is True
-    later_user_id = add_event(
-        store, umo=umo, direction="user", text="不应被后台新题边界跳过的后续问题"
+    target_user_id = add_event(
+        store, umo=umo, direction="user", text="正常存在的目标题目"
     )
-
-    created = asyncio.run(
-        store.reassign_message_turns(
-            event_ids=[user_id],
-            question_uuid=None,
-            editor="tester",
-            create_new=True,
+    target_boundary_id = add_event(
+        store,
+        umo=umo,
+        direction="user",
+        text="再次问完",
+        body_text="",
+        boundary=True,
+    )
+    target = asyncio.run(
+        store.create_question_interval(
+            umo=umo, boundary_event_id=target_boundary_id
         )
     )
-
-    new_uuid = created["created_question_uuid"]
-    assert new_uuid and new_uuid != old["uuid"]
-    assert created["event_ids"] == [user_id, answer_id]
-    assert created["queued_questions"] == [new_uuid]
-    old_detail = asyncio.run(store.question_detail(old["uuid"]))
-    new_source = asyncio.run(store.question_source(new_uuid))
-    assert old_detail and old_detail["deleted_at"] is not None
-    assert old_detail["event_count"] == 0
-    assert new_source and new_source["status"] == "FINALIZING"
-    assert [(item["id"], item["relation"]) for item in new_source["events"]] == [
-        (user_id, "primary"),
-        (answer_id, "answer"),
-    ]
-    new_detail = asyncio.run(store.question_detail(new_uuid))
-    assert new_detail
-    manual_boundary = next(
-        item for item in new_detail["events"] if item["relation"] == "boundary"
-    )
-    assert manual_boundary["direction"] == "system"
-    assert manual_boundary["boundary_rule"] == "dashboard_manual_archive"
-
-    later_boundary_id = add_event(
-        store, umo=umo, direction="user", text="再次问完", body_text="", boundary=True
-    )
-    later = asyncio.run(
-        store.create_question_interval(umo=umo, boundary_event_id=later_boundary_id)
-    )
-    assert later
-    later_source = asyncio.run(store.question_source(later["uuid"]))
-    assert later_source
-    assert [item["id"] for item in later_source["events"]] == [later_user_id]
-
-    assert asyncio.run(store.claim_job(new_uuid)) is True
-    archived_new = asyncio.run(
+    assert target and asyncio.run(store.claim_job(target["uuid"]))
+    asyncio.run(
         store.complete_question(
-            question_uuid=new_uuid,
+            question_uuid=target["uuid"],
             subject="数学",
-            title="新题目",
-            summary="新总结",
+            title="目标题目",
+            summary="目标总结",
             provider_id="test",
             model_id="test",
             prompt_version="test",
         )
     )
-    assert archived_new["public_id"] == "数学0002"
+
+    listed = asyncio.run(store.list_messages(umo=umo, search="需要重新整理", limit=20))
+    assert len(listed["items"]) == 1
+    assert listed["items"][0]["id"] == user_id
+    assert listed["items"][0]["movable"] is True
+    assert listed["items"][0]["memberships"][0]["deleted_at"] is not None
+
+    moved = asyncio.run(
+        store.reassign_message_turns(
+            event_ids=[user_id], question_uuid=target["uuid"], editor="tester"
+        )
+    )
+
+    assert moved["event_ids"] == [user_id, answer_id]
+    assert moved["queued_questions"] == [target["uuid"]]
+    old_detail = asyncio.run(store.question_detail(old["uuid"]))
+    assert old_detail and old_detail["deleted_at"] is not None
+    assert old_detail["event_count"] == 0
+    target_source = asyncio.run(store.question_source(target["uuid"]))
+    assert target_source and target_source["status"] == "FINALIZING"
+    assert [(item["id"], item["relation"]) for item in target_source["events"]] == [
+        (target_user_id, "primary"),
+        (user_id, "supplement"),
+        (answer_id, "answer"),
+    ]
