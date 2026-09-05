@@ -25,7 +25,7 @@ from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.10.1"
+PLUGIN_VERSION = "0.11.0"
 INLINE_IMAGE_MIME_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"}
 )
@@ -198,7 +198,6 @@ class KaoyanArchivePlugin(Star):
         yield event.plain_result(
             "考研归档状态："
             f"事件 {stats['events']} 条，题目 {stats['questions']} 道，"
-            f"待归档 {stats['unarchived_messages']} 条，"
             f"待分类 {stats['pending_classifications']} 条，"
             f"处理中 {stats['finalizing']}，失败 {stats['failed']}。"
         )
@@ -346,6 +345,9 @@ class KaoyanArchivePlugin(Star):
                 result = await self.archive_service.finalize(question_uuid)
                 if not await self.store.archive_job_pending(question_uuid):
                     break
+            detail = await self.store.question_detail(question_uuid)
+            if not detail or detail.get("status") != "ARCHIVED":
+                return
             if notify and self._cfg_bool("send_archive_notice", True):
                 await self.context.send_message(
                     result.umo,
@@ -472,6 +474,8 @@ class KaoyanArchivePlugin(Star):
             ("/questions/<question_uuid>", self.web_question, ["GET"], "题目详情"),
             ("/questions/<question_uuid>/edit", self.web_question_edit, ["POST"], "编辑题目归档"),
             ("/questions/<question_uuid>/action", self.web_question_action, ["POST"], "题目操作"),
+            ("/messages", self.web_messages, ["GET"], "全部原始消息及题目归属"),
+            ("/messages/action", self.web_messages_action, ["POST"], "调整消息题目归属"),
             ("/repairs", self.web_repairs, ["GET"], "异常修复列表"),
             ("/repairs/action", self.web_repairs_action, ["POST"], "批量修复异常"),
             ("/attachments/<sha256>", self.web_attachment, ["GET"], "图片附件预览"),
@@ -546,6 +550,87 @@ class KaoyanArchivePlugin(Star):
             offset=offset,
         )
         return json_response({"items": questions, "limit": limit, "offset": offset})
+
+    async def web_messages(self):
+        if response := self._require_dashboard_user():
+            return response
+        limit = min(max(request.query.get("limit", 100, type=int), 1), 200)
+        offset = max(request.query.get("offset", 0, type=int), 0)
+        direction = str(request.query.get("direction", "") or "")
+        ownership = str(request.query.get("ownership", "") or "")
+        if direction not in {"", "user", "assistant", "control"}:
+            return error_response("invalid direction filter", status_code=400)
+        if ownership not in {"", "assigned", "unarchived", "excluded", "pending"}:
+            return error_response("invalid ownership filter", status_code=400)
+        result = await self.store.list_messages(
+            umo=str(request.query.get("umo", "") or ""),
+            direction=direction,
+            ownership=ownership,
+            search=str(request.query.get("search", "") or ""),
+            limit=limit,
+            offset=offset,
+        )
+        target_lists = await asyncio.gather(
+            *(
+                self.store.list_questions(
+                    umo="",
+                    subject="",
+                    status=status,
+                    search="",
+                    include_deleted=False,
+                    limit=500,
+                    offset=0,
+                )
+                for status in ("ARCHIVED", "FINALIZE_FAILED", "ABANDONED")
+            )
+        )
+        result["targets"] = [item for items in target_lists for item in items]
+        return json_response(result)
+
+    async def web_messages_action(self):
+        if response := self._require_dashboard_user():
+            return response
+        payload = await request.json(default={})
+        if not isinstance(payload, dict):
+            return error_response("request body must be an object", status_code=400)
+        action = str(payload.get("action") or "")
+        if action not in {"assign", "unarchive"}:
+            return error_response("unsupported message action", status_code=400)
+        raw_ids = payload.get("ids")
+        if not isinstance(raw_ids, list) or not raw_ids or len(raw_ids) > 100:
+            return error_response("ids must contain 1 to 100 items", status_code=400)
+        try:
+            event_ids = sorted({int(item) for item in raw_ids if int(item) > 0})
+        except (TypeError, ValueError):
+            return error_response("invalid event id", status_code=400)
+        question_uuid = (
+            str(payload.get("question_uuid") or "").strip()
+            if action == "assign"
+            else None
+        )
+        if not event_ids or (action == "assign" and not question_uuid):
+            return error_response(
+                "event ids and target question are required", status_code=400
+            )
+        try:
+            result = await self.store.reassign_message_turns(
+                event_ids=event_ids,
+                question_uuid=question_uuid,
+                editor=str(request.username or "dashboard"),
+            )
+        except ValueError as exc:
+            return error_response(str(exc), status_code=409)
+        for affected_uuid in result["queued_questions"]:
+            self._schedule_archive(affected_uuid, notify=False)
+        logger.info(
+            "归档页面调整消息归属 user=%s action=%s selected=%d expanded=%d affected=%d",
+            str(request.username or "dashboard"),
+            action,
+            result["selected_event_count"],
+            result["event_count"],
+            len(result["affected_questions"]),
+        )
+        return json_response({"saved": True, "result": result})
 
     async def web_repairs(self):
         if response := self._require_dashboard_user():

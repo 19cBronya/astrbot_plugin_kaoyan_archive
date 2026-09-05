@@ -45,15 +45,26 @@ def test_page_has_batch_repair_center_and_collapsed_excluded_events() -> None:
 
     assert 'id="repair-view"' in document
     assert 'id="repair-select-all"' in document
-    assert 'id="repair-target"' in document
     assert 'id="detail-excluded"' in document
     assert "pending_classifications" in script
-    assert "unarchived_messages" in script
-    assert 'repair: "unarchived"' in script
-    assert 'attach_existing: "归档至所选已有题目"' in script
     assert 'runRepairAction("manual_question")' in script
     assert 'runRepairAction("manual_instruction")' in script
     assert 'runRepairAction("manual_archive")' in script
+
+
+def test_page_has_all_messages_membership_manager() -> None:
+    document = (PAGE / "index.html").read_text(encoding="utf-8")
+    script = (PAGE / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="messages-view"' in document
+    assert 'id="message-ownership"' in document
+    assert 'id="message-target"' in document
+    assert 'id="message-unarchive"' in document
+    assert '{ label: "全部消息", value: stats.events ?? 0, view: "messages" }' in script
+    assert 'apiPost("messages/action"' in script
+    assert 'runMessageAction("assign")' in script
+    assert 'runMessageAction("unarchive")' in script
+    assert 'repair: "unarchived"' not in script
 
 
 def test_all_katex_fonts_referenced_by_css_are_vendored() -> None:

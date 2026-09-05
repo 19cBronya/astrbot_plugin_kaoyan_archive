@@ -4,6 +4,8 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from kaoyan_archive.storage import ArchiveStore
 
 
@@ -800,3 +802,186 @@ def test_late_answer_during_running_archive_requests_a_second_pass(
     source = asyncio.run(store.question_source(question["uuid"]))
     assert source
     assert late_answer_id in [event["id"] for event in source["events"]]
+
+
+def test_all_messages_show_current_and_historical_question_relations(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    umo = "default:FriendMessage:all-messages"
+    user_id = add_event(store, umo=umo, direction="user", text="解释一下极限")
+    answer_id = asyncio.run(
+        store.add_event(
+            umo=umo,
+            direction="assistant",
+            platform_message_id="answer-1",
+            parent_event_id=user_id,
+            sender_id="bot",
+            sender_name="bot",
+            kind="assistant",
+            text="先判断函数趋近方向。",
+            body_text="先判断函数趋近方向。",
+            components=[],
+            raw={"kept": True},
+            is_command=False,
+            is_boundary=False,
+            boundary_rule="",
+            created_at=2,
+            provider_id="umo-provider",
+            model_id="umo-model",
+            prompt_version="runtime",
+        )
+    )
+    boundary_id = add_event(
+        store, umo=umo, direction="user", text="我问完了", body_text="", boundary=True
+    )
+    question = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=boundary_id)
+    )
+    assert question
+
+    result = asyncio.run(store.list_messages(umo=umo, limit=20))
+
+    assert result["total"] == 3
+    by_id = {item["id"]: item for item in result["items"]}
+    assert by_id[user_id]["movable"] is True
+    assert by_id[answer_id]["movable"] is True
+    assert by_id[boundary_id]["movable"] is False
+    assert by_id[boundary_id]["move_blocked_reason"] == "结束边界只读"
+    assert by_id[user_id]["memberships"][0]["relation"] == "primary"
+    assert by_id[answer_id]["memberships"][0]["relation"] == "answer"
+    assert by_id[boundary_id]["memberships"][0]["relation"] == "boundary"
+
+    assigned = asyncio.run(
+        store.list_messages(umo=umo, ownership="assigned", limit=20)
+    )
+    assert {item["id"] for item in assigned["items"]} == {user_id, answer_id}
+    searched = asyncio.run(store.list_messages(umo=umo, search="趋近方向", limit=20))
+    assert [item["id"] for item in searched["items"]] == [answer_id]
+
+
+def test_reassigning_one_message_moves_the_complete_turn_and_changes_sources(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    umo = "default:FriendMessage:reassign"
+
+    first_user = add_event(store, umo=umo, direction="user", text="第一题")
+    first_answer = asyncio.run(
+        store.add_event(
+            umo=umo,
+            direction="assistant",
+            platform_message_id="first-answer",
+            parent_event_id=first_user,
+            sender_id="bot",
+            sender_name="bot",
+            kind="assistant",
+            text="第一题答案",
+            body_text="第一题答案",
+            components=[],
+            raw={},
+            is_command=False,
+            is_boundary=False,
+            boundary_rule="",
+            created_at=2,
+            provider_id="",
+            model_id="",
+            prompt_version="",
+        )
+    )
+    first_boundary = add_event(
+        store, umo=umo, direction="user", text="问完了", body_text="", boundary=True
+    )
+    first = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=first_boundary)
+    )
+    assert first and asyncio.run(store.claim_job(first["uuid"]))
+    asyncio.run(
+        store.complete_question(
+            question_uuid=first["uuid"],
+            subject="数学",
+            title="第一题",
+            summary="第一题总结",
+            provider_id="test",
+            model_id="test",
+            prompt_version="test",
+        )
+    )
+
+    second_user = add_event(store, umo=umo, direction="user", text="第二题")
+    second_boundary = add_event(
+        store, umo=umo, direction="user", text="又问完了", body_text="", boundary=True
+    )
+    second = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=second_boundary)
+    )
+    assert second and asyncio.run(store.claim_job(second["uuid"]))
+    asyncio.run(
+        store.complete_question(
+            question_uuid=second["uuid"],
+            subject="数学",
+            title="第二题",
+            summary="第二题总结",
+            provider_id="test",
+            model_id="test",
+            prompt_version="test",
+        )
+    )
+
+    moved = asyncio.run(
+        store.reassign_message_turns(
+            event_ids=[first_answer],
+            question_uuid=second["uuid"],
+            editor="tester",
+        )
+    )
+
+    assert moved["event_ids"] == [first_user, first_answer]
+    assert moved["abandoned_questions"] == [first["uuid"]]
+    assert moved["queued_questions"] == [second["uuid"]]
+    first_source = asyncio.run(store.question_source(first["uuid"]))
+    second_source = asyncio.run(store.question_source(second["uuid"]))
+    assert first_source and first_source["status"] == "ABANDONED"
+    assert first_source["events"] == []
+    assert second_source
+    assert [(item["id"], item["relation"]) for item in second_source["events"]] == [
+        (second_user, "primary"),
+        (first_user, "supplement"),
+        (first_answer, "answer"),
+    ]
+    first_detail = asyncio.run(store.question_detail(first["uuid"]))
+    assert first_detail
+    assert {
+        item["id"]: item["relation"] for item in first_detail["events"]
+    }[first_user] == "excluded"
+
+    unassigned = asyncio.run(
+        store.reassign_message_turns(
+            event_ids=[first_user], question_uuid=None, editor="tester"
+        )
+    )
+    assert unassigned["event_ids"] == [first_user, first_answer]
+    second_source = asyncio.run(store.question_source(second["uuid"]))
+    assert second_source
+    assert [item["id"] for item in second_source["events"]] == [second_user]
+    unarchived = asyncio.run(
+        store.list_messages(
+            umo=umo, direction="user", ownership="unarchived", limit=20
+        )
+    )
+    assert [item["id"] for item in unarchived["items"]] == [first_user]
+
+
+def test_control_messages_cannot_be_reassigned(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    umo = "default:FriendMessage:readonly-control"
+    boundary_id = add_event(
+        store, umo=umo, direction="user", text="问完了", body_text="", boundary=True
+    )
+
+    with pytest.raises(ValueError, match="结束边界只读"):
+        asyncio.run(
+            store.reassign_message_turns(
+                event_ids=[boundary_id], question_uuid=None, editor="tester"
+            )
+        )

@@ -49,6 +49,7 @@
               <option value="ARCHIVED">已归档</option>
               <option value="FINALIZING">整理中</option>
               <option value="FINALIZE_FAILED">整理失败</option>
+              <option value="ABANDONED">已移空</option>
             </select>
           </label>
           <label>
@@ -69,6 +70,76 @@
         </div>
       </section>
 
+      <section id="messages-view" class="panel archive-panel hidden">
+        <div class="panel-heading repair-heading">
+          <div>
+            <p class="section-kicker">ALL MESSAGES</p>
+            <h2>全部消息</h2>
+            <p class="section-description">查看每条不可变原始消息及其题目关系。调整时按完整对话轮次移动用户消息和对应回复，结束边界与框架指令只读。</p>
+          </div>
+          <button id="messages-back" class="button secondary" type="button">返回题目列表</button>
+        </div>
+        <form id="message-filters" class="filters message-filters">
+          <label class="search-field">
+            <span>搜索原文</span>
+            <input id="message-search" type="search" placeholder="消息正文、消息 ID 或发送者" />
+          </label>
+          <label>
+            <span>会话</span>
+            <select id="message-umo"><option value="">全部会话</option></select>
+          </label>
+          <label>
+            <span>消息类型</span>
+            <select id="message-direction">
+              <option value="">全部类型</option>
+              <option value="user">用户消息</option>
+              <option value="assistant">助手回复</option>
+              <option value="control">边界与指令</option>
+            </select>
+          </label>
+          <label>
+            <span>归属状态</span>
+            <select id="message-ownership">
+              <option value="">全部归属</option>
+              <option value="assigned">已进入题目正文</option>
+              <option value="unarchived">未进入题目正文</option>
+              <option value="excluded">存在排除记录</option>
+              <option value="pending">待分类</option>
+            </select>
+          </label>
+          <button class="button secondary" type="submit">筛选</button>
+        </form>
+        <div class="message-toolbar">
+          <label class="check-label repair-select-all">
+            <input id="message-select-all" type="checkbox" />
+            <span>全选本页可调整消息</span>
+          </label>
+          <span id="message-selected" class="muted-text">已选择 0 项</span>
+          <label class="message-target">
+            <span>归档至已有题目</span>
+            <select id="message-target"><option value="">请选择目标题目</option></select>
+          </label>
+          <div class="message-actions">
+            <button id="message-assign" class="button primary" type="button">归入所选题目</button>
+            <button id="message-unarchive" class="button secondary" type="button">设为未归档</button>
+          </div>
+        </div>
+        <div class="message-list-heading">
+          <span id="message-result-count" class="result-count"></span>
+          <span class="muted-text">复选任意一条会自动处理其完整问答轮次</span>
+        </div>
+        <div id="message-list" class="message-list" aria-live="polite"></div>
+        <div id="empty-messages" class="empty hidden">
+          <div class="empty-icon">∅</div>
+          <p>没有符合条件的消息。</p>
+        </div>
+        <div class="pagination">
+          <button id="messages-prev" class="button secondary" type="button">上一页</button>
+          <span id="messages-page" class="muted-text"></span>
+          <button id="messages-next" class="button secondary" type="button">下一页</button>
+        </div>
+      </section>
+
       <section id="repair-view" class="panel archive-panel hidden">
         <div class="panel-heading repair-heading">
           <div>
@@ -84,10 +155,6 @@
             <span>全选</span>
           </label>
           <span id="repair-selected" class="muted-text">已选择 0 项</span>
-          <label id="repair-target-wrap" class="repair-target hidden">
-            <span>归档至已有题目</span>
-            <select id="repair-target"><option value="">请选择目标题目</option></select>
-          </label>
           <div class="repair-actions">
             <button id="repair-ai" class="button primary" type="button">批量 AI 重试</button>
             <button id="repair-question" class="button secondary classification-action" type="button">标为题目内容</button>

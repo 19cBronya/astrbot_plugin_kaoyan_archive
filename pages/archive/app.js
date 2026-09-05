@@ -15,6 +15,12 @@ const state = {
   editing: false,
   repairType: null,
   repairs: null,
+  messages: [],
+  messageTargets: [],
+  messageTotal: 0,
+  messageOffset: 0,
+  messageLimit: 50,
+  messagesOpen: false,
 };
 const imagePreviewCache = new Map();
 const previewableImageTypes = new Set([
@@ -65,19 +71,23 @@ function renderStats() {
   const stats = state.stats || {};
   const items = [
     { label: "归档题目", value: stats.questions ?? 0 },
-    { label: "原始事件", value: stats.events ?? 0 },
-    { label: "待归档消息", value: stats.unarchived_messages ?? 0, repair: "unarchived" },
+    { label: "白名单会话", value: stats.umos ?? 0 },
+    { label: "全部消息", value: stats.events ?? 0, view: "messages" },
     { label: "待分类", value: stats.pending_classifications ?? 0, repair: "classification" },
     { label: "整理失败", value: stats.failed ?? 0, repair: "archive" },
   ];
   const container = $("stats");
   container.replaceChildren();
   for (const item of items) {
-    const card = document.createElement(item.repair ? "button" : "div");
-    card.className = `stat${item.repair ? " actionable" : ""}`;
+    const actionable = item.repair || item.view;
+    const card = document.createElement(actionable ? "button" : "div");
+    card.className = `stat${actionable ? " actionable" : ""}`;
     if (item.repair) {
       card.type = "button";
       card.addEventListener("click", () => openRepairCenter(item.repair));
+    } else if (item.view === "messages") {
+      card.type = "button";
+      card.addEventListener("click", openMessagesView);
     }
     const caption = document.createElement("span");
     caption.textContent = item.label;
@@ -96,6 +106,7 @@ function renderConfig() {
     if (question.umo) umos.add(question.umo);
   }
   fillSelect($("filter-umo"), "全部会话", [...umos]);
+  fillSelect($("message-umo"), "全部会话", [...umos]);
 }
 
 function fillSelect(select, emptyLabel, values) {
@@ -109,6 +120,7 @@ function fillSelect(select, emptyLabel, values) {
 
 function statusType(status) {
   if (status === "ARCHIVED") return "ok";
+  if (status === "ABANDONED") return "muted";
   if (status === "FINALIZE_FAILED") return "error";
   if (status === "FINALIZING") return "warn";
   return "muted";
@@ -119,6 +131,7 @@ function statusLabel(status) {
     ARCHIVED: "已归档",
     FINALIZING: "整理中",
     FINALIZE_FAILED: "整理失败",
+    ABANDONED: "已移空",
   }[status] || status || "未知";
 }
 
@@ -488,25 +501,224 @@ function actionButton(label, kind, handler) {
   return button;
 }
 
-async function openRepairCenter(type) {
-  state.repairType = type;
+function messageRoleLabel(entry) {
+  if (entry.is_boundary) return "结束边界";
+  if (entry.is_command) return "框架指令";
+  if (entry.direction === "user") return "用户";
+  if (entry.direction === "assistant") return "助手";
+  return entry.direction || "系统";
+}
+
+function activeMemberships(entry) {
+  return (entry.memberships || []).filter((membership) =>
+    ["primary", "supplement", "answer"].includes(membership.relation),
+  );
+}
+
+async function openMessagesView() {
+  state.messagesOpen = true;
+  state.messageOffset = 0;
   $("stats").classList.add("hidden");
   $("library-view").classList.add("hidden");
+  $("repair-view").classList.add("hidden");
+  $("messages-view").classList.remove("hidden");
+  await loadMessages();
+}
+
+function closeMessagesView() {
+  state.messagesOpen = false;
+  $("messages-view").classList.add("hidden");
+  $("stats").classList.remove("hidden");
+  $("library-view").classList.remove("hidden");
+}
+
+async function loadMessages() {
+  try {
+    const result = await apiGet("messages", {
+      search: $("message-search").value.trim(),
+      umo: $("message-umo").value,
+      direction: $("message-direction").value,
+      ownership: $("message-ownership").value,
+      limit: state.messageLimit,
+      offset: state.messageOffset,
+    });
+    state.messages = result.items || [];
+    state.messageTargets = result.targets || [];
+    state.messageTotal = Number(result.total || 0);
+    renderMessages();
+  } catch (error) {
+    toast(error.message || "消息列表加载失败", true);
+  }
+}
+
+function renderMessages() {
+  const list = $("message-list");
+  list.replaceChildren();
+  $("empty-messages").classList.toggle("hidden", state.messages.length > 0);
+  $("message-result-count").textContent = `共 ${state.messageTotal} 条原始消息`;
+  $("message-select-all").checked = false;
+  $("message-select-all").indeterminate = false;
+
+  for (const entry of state.messages) {
+    const card = document.createElement("article");
+    card.className = `message-item ${entry.direction || "system"}${entry.movable ? "" : " read-only"}`;
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.className = "message-checkbox";
+    check.dataset.messageId = String(entry.id);
+    check.disabled = !entry.movable;
+    check.title = entry.move_blocked_reason || "按完整问答轮次调整归属";
+    check.addEventListener("change", updateMessageSelection);
+
+    const content = document.createElement("div");
+    content.className = "message-content";
+    const header = document.createElement("div");
+    header.className = "message-head";
+    const identity = document.createElement("strong");
+    identity.textContent = `#${entry.id} · ${messageRoleLabel(entry)}`;
+    const time = document.createElement("span");
+    time.textContent = dateTime(entry.created_at);
+    header.append(identity, time);
+
+    const meta = document.createElement("div");
+    meta.className = "message-meta";
+    for (const value of [
+      entry.umo,
+      entry.platform_message_id ? `消息 ID ${entry.platform_message_id}` : "",
+      entry.parent_event_id ? `回复 #${entry.parent_event_id}` : "",
+      entry.effective_kind ? `分类 ${entry.effective_kind}` : "",
+    ].filter(Boolean)) {
+      const span = document.createElement("span");
+      span.textContent = value;
+      meta.append(span);
+    }
+
+    const text = document.createElement("p");
+    text.className = "message-body";
+    text.textContent = entry.text || (entry.attachments?.length ? "[附件消息]" : "[空消息]");
+    content.append(header, meta, text);
+    for (const attachment of entry.attachments || []) {
+      content.append(renderAttachment(attachment));
+    }
+
+    const memberships = document.createElement("div");
+    memberships.className = "message-memberships";
+    const active = activeMemberships(entry);
+    if (!active.length && !entry.is_boundary && !entry.is_command) {
+      memberships.append(badge("未归档", "warn"));
+    }
+    for (const membership of entry.memberships || []) {
+      const relation = relationLabel(membership.relation);
+      const label = `${membership.public_id || "未编号"} · ${relation}${membership.deleted_at ? " · 已删除" : ""}`;
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = `membership-chip ${membership.relation === "excluded" ? "excluded" : ""}`;
+      chip.textContent = label;
+      chip.title = membership.title || label;
+      chip.addEventListener("click", () => openDetail(membership.question_uuid));
+      memberships.append(chip);
+    }
+    if (entry.classification_status && entry.classification_status !== "DONE") {
+      memberships.append(badge("待分类", "error"));
+    }
+    if (!entry.movable) memberships.append(badge(entry.move_blocked_reason || "只读"));
+    content.append(memberships);
+    card.append(check, content);
+    list.append(card);
+  }
+
+  const page = Math.floor(state.messageOffset / state.messageLimit) + 1;
+  const pages = Math.max(Math.ceil(state.messageTotal / state.messageLimit), 1);
+  $("messages-page").textContent = `第 ${page} / ${pages} 页`;
+  $("messages-prev").disabled = state.messageOffset <= 0;
+  $("messages-next").disabled = state.messageOffset + state.messageLimit >= state.messageTotal;
+  renderMessageTargets();
+  updateMessageSelection();
+}
+
+function selectedMessageIds() {
+  return [...document.querySelectorAll(".message-checkbox:checked")]
+    .map((input) => input.dataset.messageId);
+}
+
+function renderMessageTargets() {
+  const select = $("message-target");
+  const previous = select.value;
+  const selected = new Set(selectedMessageIds());
+  const umos = new Set(
+    state.messages.filter((item) => selected.has(String(item.id))).map((item) => item.umo),
+  );
+  const targets = state.messageTargets.filter(
+    (item) => umos.size === 0 || (umos.size === 1 && umos.has(item.umo)),
+  );
+  const placeholder = umos.size > 1 ? "请只选择同一会话中的消息" : "请选择目标题目";
+  select.replaceChildren(new Option(placeholder, ""));
+  for (const item of targets) {
+    select.add(new Option(
+      `${item.public_id || "未编号"}｜${item.title || "未命名题目"}（${statusLabel(item.status)}）`,
+      item.uuid,
+    ));
+  }
+  if ([...select.options].some((option) => option.value === previous)) select.value = previous;
+  select.disabled = umos.size > 1 || targets.length === 0;
+}
+
+function updateMessageSelection() {
+  const all = [...document.querySelectorAll(".message-checkbox:not(:disabled)")];
+  const selected = selectedMessageIds();
+  $("message-selected").textContent = `已选择 ${selected.length} 项`;
+  $("message-select-all").checked = all.length > 0 && selected.length === all.length;
+  $("message-select-all").indeterminate = selected.length > 0 && selected.length < all.length;
+  renderMessageTargets();
+  $("message-assign").disabled = selected.length === 0 || !$("message-target").value;
+  $("message-unarchive").disabled = selected.length === 0;
+}
+
+async function runMessageAction(action) {
+  const ids = selectedMessageIds();
+  if (!ids.length) return;
+  const assign = action === "assign";
+  const target = $("message-target").value;
+  if (assign && !target) return;
+  const verb = assign ? "归入所选题目" : "设为未归档";
+  if (!await confirmAction(
+    `确认把选中的 ${ids.length} 条消息按完整问答轮次${verb}？受影响题目会自动使用调整后的当前归属重新整理，原始事件和旧关系审计不会丢失。`,
+    "确认调整",
+  )) return;
+  $("message-assign").disabled = true;
+  $("message-unarchive").disabled = true;
+  try {
+    const response = await apiPost("messages/action", {
+      action,
+      ids,
+      question_uuid: assign ? target : "",
+    });
+    const result = response.result || {};
+    toast(`已调整 ${result.event_count || ids.length} 条轮次消息，受影响题目将重新整理`);
+    await Promise.all([loadOverview(), loadQuestions(), loadMessages()]);
+  } catch (error) {
+    toast(error.message || "消息归属调整失败", true);
+    updateMessageSelection();
+  }
+}
+
+async function openRepairCenter(type) {
+  state.repairType = type;
+  state.messagesOpen = false;
+  $("stats").classList.add("hidden");
+  $("library-view").classList.add("hidden");
+  $("messages-view").classList.add("hidden");
   $("repair-view").classList.remove("hidden");
   const classification = type === "classification";
-  const unarchived = type === "unarchived";
   $("repair-title").textContent = classification
     ? "待分类消息"
-    : unarchived ? "待归档消息" : "整理失败题目";
+    : "整理失败题目";
   $("repair-description").textContent = classification
     ? "分类模型链路全部失败时，原始消息会停在这里且不进入题目正文。可批量重新调用 AI，或人工明确其用途。"
-    : unarchived
-      ? "这些题目消息尚未进入任何归档。选择同一会话中的消息和一个已有题目，可把结束边界后的追问作为补充并回原题。"
-      : "这些题目的区间已经建立，但整理模型调用或结果解析失败。可批量重新归档。";
+    : "这些题目的区间已经建立，但整理模型调用或结果解析失败。可批量重新归档。";
   $("repair-ai").textContent = classification
     ? "批量 AI 重试"
-    : unarchived ? "归档至所选题目" : "批量重试归档";
-  $("repair-target-wrap").classList.toggle("hidden", !unarchived);
+    : "批量重试归档";
   for (const button of document.querySelectorAll(".classification-action")) {
     button.classList.toggle("hidden", !classification);
   }
@@ -531,10 +743,9 @@ async function loadRepairs() {
 
 function renderRepairs() {
   const classification = state.repairType === "classification";
-  const unarchived = state.repairType === "unarchived";
   const items = classification
     ? (state.repairs?.classifications || [])
-    : unarchived ? (state.repairs?.unarchived || []) : (state.repairs?.archives || []);
+    : (state.repairs?.archives || []);
   const list = $("repair-list");
   list.replaceChildren();
   $("empty-repairs").classList.toggle("hidden", items.length > 0);
@@ -546,81 +757,35 @@ function renderRepairs() {
     check.type = "checkbox";
     check.className = "repair-checkbox";
     check.dataset.repairId = String(
-      classification || unarchived ? entry.event_id : entry.uuid,
+      classification ? entry.event_id : entry.uuid,
     );
     check.addEventListener("change", updateRepairSelection);
 
     const content = document.createElement("div");
     content.className = "repair-content";
     const title = document.createElement("h3");
-    title.textContent = classification || unarchived
+    title.textContent = classification
       ? (entry.text || (entry.attachment_count ? "[附件消息]" : "[空消息]"))
       : `${entry.public_id || "未编号"}｜${entry.title || "未命名题目"}`;
     const meta = document.createElement("div");
     meta.className = "repair-meta";
     const values = classification
       ? [entry.status === "RUNNING" ? "重试中" : "分类失败", entry.umo, `已尝试 ${entry.attempts || 0} 次`, dateTime(entry.created_at)]
-      : unarchived
-        ? [entry.umo, `${entry.answers?.length || 0} 条对应回答`, dateTime(entry.created_at)]
-        : [entry.subject || "待分类", entry.umo, `${entry.event_count || 0} 条消息`, dateTime(entry.created_at)];
+      : [entry.subject || "待分类", entry.umo, `${entry.event_count || 0} 条消息`, dateTime(entry.created_at)];
     for (const value of values) {
       const span = document.createElement("span");
       span.textContent = value;
       meta.append(span);
     }
     content.append(title, meta);
-    if (unarchived) {
-      for (const attachment of entry.attachments || []) {
-        content.append(renderAttachment(attachment));
-      }
-    }
-    if (unarchived && entry.answers?.length) {
-      for (const entryAnswer of entry.answers) {
-        const answer = document.createElement("p");
-        answer.className = "repair-answer";
-        answer.textContent = `助手：${entryAnswer.text || (entryAnswer.attachments?.length ? "[附件回答]" : "")}`;
-        content.append(answer);
-        for (const attachment of entryAnswer.attachments || []) {
-          content.append(renderAttachment(attachment));
-        }
-      }
-    } else if (!unarchived) {
-      const error = document.createElement("p");
-      error.className = "repair-error";
-      error.textContent = entry.error || "未记录具体错误";
-      content.append(error);
-    }
+    const error = document.createElement("p");
+    error.className = "repair-error";
+    error.textContent = entry.error || "未记录具体错误";
+    content.append(error);
     card.append(check, content);
     list.append(card);
   }
-  renderRepairTargets();
   updateRepairSelection();
-}
-
-function renderRepairTargets() {
-  const select = $("repair-target");
-  const previous = select.value;
-  const selectedIds = new Set(selectedRepairIds());
-  const selectedItems = (state.repairs?.unarchived || [])
-    .filter((item) => selectedIds.has(String(item.event_id)));
-  const umos = new Set(selectedItems.map((item) => item.umo));
-  const targets = (state.repairs?.targets || []).filter(
-    (item) => umos.size === 0 || (umos.size === 1 && umos.has(item.umo)),
-  );
-  const placeholder = umos.size > 1
-    ? "请只选择同一会话中的消息"
-    : "请选择目标题目";
-  select.replaceChildren(new Option(placeholder, ""));
-  for (const item of targets) {
-    select.add(new Option(
-      `${item.public_id || "未编号"}｜${item.title || "未命名题目"}`,
-      item.uuid,
-    ));
-  }
-  if ([...select.options].some((option) => option.value === previous)) {
-    select.value = previous;
-  }
-  select.disabled = umos.size > 1 || targets.length === 0;
 }
 
 function selectedRepairIds() {
@@ -634,11 +799,8 @@ function updateRepairSelection() {
   $("repair-selected").textContent = `已选择 ${selected.length} 项`;
   $("repair-select-all").checked = all.length > 0 && selected.length === all.length;
   $("repair-select-all").indeterminate = selected.length > 0 && selected.length < all.length;
-  if (state.repairType === "unarchived") renderRepairTargets();
   for (const button of $("repair-view").querySelectorAll(".repair-actions button")) {
-    button.disabled = selected.length === 0 || (
-      state.repairType === "unarchived" && !$("repair-target").value
-    );
+    button.disabled = selected.length === 0;
   }
 }
 
@@ -651,7 +813,6 @@ async function runRepairAction(action) {
     manual_instruction: "标为指令/无关消息",
     manual_archive: "标为结束边界",
     retry_archive: "重新调用整理模型",
-    attach_existing: "归档至所选已有题目",
   };
   if (!await confirmAction(
     `确认将选中的 ${ids.length} 项${descriptions[action]}？操作会记录修订，不会覆盖原始事件。`,
@@ -664,7 +825,6 @@ async function runRepairAction(action) {
       target: state.repairType,
       action,
       ids,
-      question_uuid: state.repairType === "unarchived" ? $("repair-target").value : "",
     });
     const failed = result.errors?.length || 0;
     toast(failed ? `处理完成，${failed} 项失败` : "修复操作已提交", failed > 0);
@@ -752,7 +912,7 @@ async function actOnQuestion(action) {
     "确认删除",
   )) return;
   if (action === "rearchive" && !await confirmAction(
-    `确认重新归档 ${state.active.public_id || "这道题"}？将使用原始会话再次调用整理模型；成功后替换展示内容并保留旧版本。`,
+    `确认重新归档 ${state.active.public_id || "这道题"}？将严格使用“全部消息”页面调整后的当前有效归属再次调用整理模型；成功后替换展示内容并保留旧版本。`,
     "开始归档",
   )) return;
   const actionButtons = [...$("detail-actions").querySelectorAll("button")];
@@ -781,7 +941,37 @@ $("filters").addEventListener("change", (event) => {
 $("refresh").addEventListener("click", () => {
   const tasks = [loadOverview(), loadQuestions()];
   if (state.repairType) tasks.push(loadRepairs());
+  if (state.messagesOpen) tasks.push(loadMessages());
   return Promise.all(tasks);
+});
+$("messages-back").addEventListener("click", closeMessagesView);
+$("message-filters").addEventListener("submit", (event) => {
+  event.preventDefault();
+  state.messageOffset = 0;
+  loadMessages();
+});
+$("message-filters").addEventListener("change", (event) => {
+  if (event.target.matches("select")) {
+    state.messageOffset = 0;
+    loadMessages();
+  }
+});
+$("message-select-all").addEventListener("change", (event) => {
+  for (const input of document.querySelectorAll(".message-checkbox:not(:disabled)")) {
+    input.checked = event.target.checked;
+  }
+  updateMessageSelection();
+});
+$("message-target").addEventListener("change", updateMessageSelection);
+$("message-assign").addEventListener("click", () => runMessageAction("assign"));
+$("message-unarchive").addEventListener("click", () => runMessageAction("unarchive"));
+$("messages-prev").addEventListener("click", () => {
+  state.messageOffset = Math.max(0, state.messageOffset - state.messageLimit);
+  loadMessages();
+});
+$("messages-next").addEventListener("click", () => {
+  state.messageOffset += state.messageLimit;
+  loadMessages();
 });
 $("repair-back").addEventListener("click", closeRepairCenter);
 $("repair-select-all").addEventListener("change", (event) => {
@@ -793,9 +983,8 @@ $("repair-select-all").addEventListener("change", (event) => {
 $("repair-ai").addEventListener("click", () => runRepairAction(
   state.repairType === "classification"
     ? "retry_ai"
-    : state.repairType === "unarchived" ? "attach_existing" : "retry_archive",
+    : "retry_archive",
 ));
-$("repair-target").addEventListener("change", updateRepairSelection);
 $("repair-question").addEventListener("click", () => runRepairAction("manual_question"));
 $("repair-instruction").addEventListener("click", () => runRepairAction("manual_instruction"));
 $("repair-archive").addEventListener("click", () => runRepairAction("manual_archive"));

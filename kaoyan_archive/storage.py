@@ -406,6 +406,382 @@ class ArchiveStore:
     ) -> list[dict[str, Any]]:
         return self._list_unarchived_messages_sync(limit)
 
+    async def list_messages(
+        self,
+        *,
+        umo: str = "",
+        direction: str = "",
+        ownership: str = "",
+        search: str = "",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        return self._list_messages_sync(
+            umo=umo,
+            direction=direction,
+            ownership=ownership,
+            search=search,
+            limit=limit,
+            offset=offset,
+        )
+
+    def _list_messages_sync(
+        self,
+        *,
+        umo: str,
+        direction: str,
+        ownership: str,
+        search: str,
+        limit: int,
+        offset: int,
+    ) -> dict[str, Any]:
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if umo:
+            clauses.append("e.umo=?")
+            params.append(umo)
+        if direction == "control":
+            clauses.append("(e.is_command=1 OR e.is_boundary=1)")
+        elif direction in {"user", "assistant"}:
+            clauses.append("e.direction=?")
+            clauses.append("e.is_command=0 AND e.is_boundary=0")
+            params.append(direction)
+        if ownership == "assigned":
+            clauses.append(
+                "EXISTS(SELECT 1 FROM question_events qe WHERE qe.event_id=e.id "
+                "AND qe.relation IN ('primary','supplement','answer'))"
+            )
+        elif ownership == "unarchived":
+            clauses.append(
+                "NOT EXISTS(SELECT 1 FROM question_events qe WHERE qe.event_id=e.id "
+                "AND qe.relation IN ('primary','supplement','answer'))"
+            )
+            clauses.append("e.is_command=0 AND e.is_boundary=0")
+        elif ownership == "excluded":
+            clauses.append(
+                "EXISTS(SELECT 1 FROM question_events qe WHERE qe.event_id=e.id "
+                "AND qe.relation='excluded')"
+            )
+        elif ownership == "pending":
+            clauses.append(
+                "EXISTS(SELECT 1 FROM classification_jobs cj WHERE cj.event_id=e.id "
+                "AND cj.status<>'DONE')"
+            )
+        if search:
+            pattern = f"%{search[:100]}%"
+            clauses.append(
+                "(e.text LIKE ? OR e.body_text LIKE ? OR e.platform_message_id LIKE ? "
+                "OR e.sender_name LIKE ?)"
+            )
+            params.extend([pattern, pattern, pattern, pattern])
+
+        where = " AND ".join(clauses)
+        safe_limit = min(max(int(limit), 1), 200)
+        safe_offset = max(int(offset), 0)
+        with self._lock, self._connect() as db:
+            total = int(
+                db.execute(
+                    f"SELECT COUNT(*) AS count FROM events e WHERE {where}", params
+                ).fetchone()["count"]
+            )
+            rows = db.execute(
+                f"""
+                SELECT e.*,
+                       COALESCE((
+                           SELECT cr.kind FROM classification_revisions cr
+                           WHERE cr.event_id=e.id
+                           ORDER BY cr.revision DESC LIMIT 1
+                       ), e.kind) AS effective_kind,
+                       COALESCE((
+                           SELECT cj.status FROM classification_jobs cj
+                           WHERE cj.event_id=e.id
+                       ), '') AS classification_status,
+                       COALESCE((
+                           SELECT cj.error FROM classification_jobs cj
+                           WHERE cj.event_id=e.id
+                       ), '') AS classification_error,
+                       COALESCE((
+                           SELECT json_group_array(json_object(
+                               'sha256', ea.sha256,
+                               'name', ea.original_name,
+                               'type', ea.component_type,
+                               'size', a.size,
+                               'mime_type', a.mime_type,
+                               'stored_path', a.stored_path
+                           ))
+                           FROM event_attachments ea
+                           JOIN attachments a ON a.sha256=ea.sha256
+                           WHERE ea.event_id=e.id
+                       ), '[]') AS attachments_json
+                FROM events e
+                WHERE {where}
+                ORDER BY e.id DESC LIMIT ? OFFSET ?
+                """,
+                [*params, safe_limit, safe_offset],
+            ).fetchall()
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                item = self._event_dict(row)
+                memberships = db.execute(
+                    """
+                    SELECT q.uuid AS question_uuid,q.public_id,q.title,q.status,
+                           q.deleted_at,qe.relation,qe.ordinal
+                    FROM question_events qe
+                    JOIN questions q ON q.uuid=qe.question_uuid
+                    WHERE qe.event_id=?
+                    ORDER BY q.boundary_event_id DESC,qe.ordinal
+                    """,
+                    (row["id"],),
+                ).fetchall()
+                item["memberships"] = [dict(membership) for membership in memberships]
+                item["movable"], item["move_blocked_reason"] = self._message_mobility(
+                    db, row
+                )
+                items.append(item)
+            return {
+                "items": items,
+                "total": total,
+                "limit": safe_limit,
+                "offset": safe_offset,
+            }
+
+    @staticmethod
+    def _message_mobility(
+        db: sqlite3.Connection, row: sqlite3.Row
+    ) -> tuple[bool, str]:
+        if bool(row["is_boundary"]):
+            return False, "结束边界只读"
+        if bool(row["is_command"]):
+            return False, "框架指令只读"
+        if row["direction"] == "user":
+            return True, ""
+        if row["direction"] != "assistant" or not row["parent_event_id"]:
+            return False, "无法确定所属对话轮次"
+        parent = db.execute(
+            "SELECT direction,is_command,is_boundary FROM events WHERE id=?",
+            (row["parent_event_id"],),
+        ).fetchone()
+        if not parent or parent["direction"] != "user":
+            return False, "无法确定所属用户消息"
+        if parent["is_boundary"] or parent["is_command"]:
+            return False, "所属用户消息是只读控制消息"
+        return True, ""
+
+    async def reassign_message_turns(
+        self,
+        *,
+        event_ids: list[int],
+        question_uuid: str | None,
+        editor: str,
+    ) -> dict[str, Any]:
+        return self._reassign_message_turns_sync(
+            event_ids=event_ids,
+            question_uuid=question_uuid,
+            editor=editor,
+        )
+
+    def _reassign_message_turns_sync(
+        self,
+        *,
+        event_ids: list[int],
+        question_uuid: str | None,
+        editor: str,
+    ) -> dict[str, Any]:
+        selected_ids = sorted({int(event_id) for event_id in event_ids})
+        if not selected_ids:
+            raise ValueError("no messages selected")
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            target = None
+            if question_uuid:
+                target = db.execute(
+                    """
+                    SELECT * FROM questions
+                    WHERE uuid=? AND status IN ('ARCHIVED','FINALIZE_FAILED','ABANDONED')
+                      AND deleted_at IS NULL
+                    """,
+                    (question_uuid,),
+                ).fetchone()
+                if not target:
+                    db.rollback()
+                    raise ValueError("target question is not available")
+
+            placeholders = ",".join("?" for _ in selected_ids)
+            selected = db.execute(
+                f"SELECT * FROM events WHERE id IN ({placeholders}) ORDER BY id",
+                selected_ids,
+            ).fetchall()
+            if len(selected) != len(selected_ids):
+                db.rollback()
+                raise ValueError("one or more messages do not exist")
+
+            expanded_ids: set[int] = set()
+            for row in selected:
+                movable, reason = self._message_mobility(db, row)
+                if not movable:
+                    db.rollback()
+                    raise ValueError(reason)
+                if row["direction"] == "user":
+                    parent_id = int(row["id"])
+                else:
+                    parent_id = int(row["parent_event_id"])
+                expanded_ids.add(parent_id)
+                expanded_ids.update(
+                    int(child["id"])
+                    for child in db.execute(
+                        """
+                        SELECT id FROM events
+                        WHERE parent_event_id=? AND direction='assistant'
+                        ORDER BY id
+                        """,
+                        (parent_id,),
+                    ).fetchall()
+                )
+
+            expanded = sorted(expanded_ids)
+            expanded_placeholders = ",".join("?" for _ in expanded)
+            rows = db.execute(
+                f"SELECT * FROM events WHERE id IN ({expanded_placeholders}) ORDER BY id",
+                expanded,
+            ).fetchall()
+            if target and any(str(row["umo"]) != str(target["umo"]) for row in rows):
+                db.rollback()
+                raise ValueError("messages and target question must use the same UMO")
+
+            previous = db.execute(
+                f"""
+                SELECT question_uuid,event_id,relation,ordinal
+                FROM question_events
+                WHERE event_id IN ({expanded_placeholders})
+                  AND relation IN ('primary','supplement','answer')
+                ORDER BY question_uuid,ordinal
+                """,
+                expanded,
+            ).fetchall()
+            affected = {str(row["question_uuid"]) for row in previous}
+            target_relations = {
+                int(row["event_id"]): str(row["relation"])
+                for row in previous
+                if question_uuid and row["question_uuid"] == question_uuid
+            }
+
+            for old in previous:
+                db.execute(
+                    """
+                    DELETE FROM question_events
+                    WHERE question_uuid=? AND event_id=? AND relation=?
+                    """,
+                    (old["question_uuid"], old["event_id"], old["relation"]),
+                )
+                if old["question_uuid"] != question_uuid:
+                    db.execute(
+                        """
+                        INSERT OR IGNORE INTO question_events(
+                            question_uuid,event_id,relation,ordinal
+                        ) VALUES(?,?,'excluded',?)
+                        """,
+                        (old["question_uuid"], old["event_id"], old["ordinal"]),
+                    )
+
+            if question_uuid:
+                affected.add(question_uuid)
+                ordinal = int(
+                    db.execute(
+                        """
+                        SELECT COALESCE(MAX(ordinal), -1) + 1 AS value
+                        FROM question_events WHERE question_uuid=?
+                        """,
+                        (question_uuid,),
+                    ).fetchone()["value"]
+                )
+                for row in rows:
+                    event_id = int(row["id"])
+                    db.execute(
+                        "DELETE FROM question_events WHERE question_uuid=? AND event_id=? AND relation='excluded'",
+                        (question_uuid, event_id),
+                    )
+                    relation = (
+                        target_relations.get(event_id, "supplement")
+                        if row["direction"] == "user"
+                        else "answer"
+                    )
+                    if relation not in {"primary", "supplement", "answer"}:
+                        relation = "supplement" if row["direction"] == "user" else "answer"
+                    db.execute(
+                        """
+                        INSERT INTO question_events(question_uuid,event_id,relation,ordinal)
+                        VALUES(?,?,?,?)
+                        """,
+                        (question_uuid, event_id, relation, ordinal),
+                    )
+                    ordinal += 1
+
+            queued: list[str] = []
+            abandoned: list[str] = []
+            for affected_uuid in sorted(affected):
+                active_count = int(
+                    db.execute(
+                        """
+                        SELECT COUNT(*) AS count FROM question_events
+                        WHERE question_uuid=?
+                          AND relation IN ('primary','supplement','answer')
+                        """,
+                        (affected_uuid,),
+                    ).fetchone()["count"]
+                )
+                db.execute(
+                    "UPDATE questions SET event_count=? WHERE uuid=?",
+                    (active_count, affected_uuid),
+                )
+                affected_question = db.execute(
+                    "SELECT deleted_at FROM questions WHERE uuid=?",
+                    (affected_uuid,),
+                ).fetchone()
+                if not affected_question or affected_question["deleted_at"] is not None:
+                    continue
+                if active_count == 0:
+                    db.execute(
+                        "UPDATE questions SET status='ABANDONED',error='' WHERE uuid=?",
+                        (affected_uuid,),
+                    )
+                    db.execute(
+                        """
+                        UPDATE archive_jobs
+                        SET status='DONE',rerun_requested=0,error='',updated_at=?
+                        WHERE question_uuid=?
+                        """,
+                        (utc_timestamp(), affected_uuid),
+                    )
+                    abandoned.append(affected_uuid)
+                else:
+                    self._queue_after_relation_change(db, affected_uuid)
+                    queued.append(affected_uuid)
+
+            action = "assign_message_turns" if question_uuid else "unarchive_message_turns"
+            self._audit(
+                db,
+                action,
+                "event_batch",
+                ",".join(str(event_id) for event_id in selected_ids),
+                {
+                    "selected_event_ids": selected_ids,
+                    "expanded_event_ids": expanded,
+                    "question_uuid": question_uuid or "",
+                    "affected_questions": sorted(affected),
+                    "editor": editor[:100],
+                },
+            )
+            db.commit()
+            return {
+                "selected_event_count": len(selected_ids),
+                "event_count": len(expanded),
+                "event_ids": expanded,
+                "question_uuid": question_uuid or "",
+                "affected_questions": sorted(affected),
+                "queued_questions": queued,
+                "abandoned_questions": abandoned,
+            }
+
     def _list_unarchived_messages_sync(self, limit: int) -> list[dict[str, Any]]:
         with self._lock, self._connect() as db:
             rows = db.execute(
@@ -794,8 +1170,8 @@ class ArchiveStore:
         ).fetchone()
         if not row:
             return
-        if row["status"] in {"ARCHIVED", "FINALIZE_FAILED"}:
-            self._retry_row(db, question_uuid, audit_action="late_answer_rearchive")
+        if row["status"] in {"ARCHIVED", "FINALIZE_FAILED", "ABANDONED"}:
+            self._retry_row(db, question_uuid, audit_action="relation_change_rearchive")
         elif row["status"] == "FINALIZING" and row["job_status"] == "RUNNING":
             db.execute(
                 """
@@ -1377,7 +1753,7 @@ class ArchiveStore:
         if repaired_kind:
             result["kind"] = repaired_kind
             result["body_text"] = repaired_body or ""
-        elif result.get("relation") == "answer" and not result.get("body_text"):
+        elif result.get("relation") in {"answer", "supplement"} and not result.get("body_text"):
             result["body_text"] = result.get("text") or ""
         return result
 
@@ -1445,6 +1821,43 @@ class ArchiveStore:
             if not question:
                 db.rollback()
                 raise ValueError("question not found")
+            active_count = int(
+                db.execute(
+                    """
+                    SELECT COUNT(*) AS count FROM question_events
+                    WHERE question_uuid=?
+                      AND relation IN ('primary','supplement','answer')
+                    """,
+                    (question_uuid,),
+                ).fetchone()["count"]
+            )
+            if active_count == 0 or question["status"] == "ABANDONED":
+                now = utc_timestamp()
+                db.execute(
+                    "UPDATE questions SET status='ABANDONED',event_count=0,error='' WHERE uuid=?",
+                    (question_uuid,),
+                )
+                db.execute(
+                    """
+                    UPDATE archive_jobs
+                    SET status='DONE',rerun_requested=0,error='',updated_at=?
+                    WHERE question_uuid=?
+                    """,
+                    (now, question_uuid),
+                )
+                self._audit(
+                    db,
+                    "archive_discarded_empty",
+                    "question",
+                    question_uuid,
+                    {},
+                )
+                db.commit()
+                return dict(
+                    db.execute(
+                        "SELECT * FROM questions WHERE uuid=?", (question_uuid,)
+                    ).fetchone()
+                )
             job = db.execute(
                 "SELECT rerun_requested FROM archive_jobs WHERE question_uuid=?",
                 (question_uuid,),
@@ -1554,10 +1967,15 @@ class ArchiveStore:
     def _fail_question_sync(self, question_uuid: str, error: str) -> None:
         with self._lock, self._connect() as db:
             now = utc_timestamp()
-            db.execute(
-                "UPDATE questions SET status='FINALIZE_FAILED',error=? WHERE uuid=?",
+            cursor = db.execute(
+                """
+                UPDATE questions SET status='FINALIZE_FAILED',error=?
+                WHERE uuid=? AND status<>'ABANDONED'
+                """,
                 (error[:4000], question_uuid),
             )
+            if cursor.rowcount == 0:
+                return
             db.execute(
                 """
                 UPDATE archive_jobs

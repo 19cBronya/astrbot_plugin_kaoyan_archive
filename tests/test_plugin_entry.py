@@ -172,7 +172,7 @@ def test_plugin_entry_registers_page_and_defaults_to_deny(monkeypatch, tmp_path:
     context = _FakeContext()
     plugin = module.KaoyanArchivePlugin(context, _Config())
 
-    assert len(context.routes) == 9
+    assert len(context.routes) == 11
     assert {route for route, *_ in context.routes} == {
         f"/{module.PLUGIN_NAME}/stats",
         f"/{module.PLUGIN_NAME}/config",
@@ -180,6 +180,8 @@ def test_plugin_entry_registers_page_and_defaults_to_deny(monkeypatch, tmp_path:
         f"/{module.PLUGIN_NAME}/questions/<question_uuid>",
         f"/{module.PLUGIN_NAME}/questions/<question_uuid>/edit",
         f"/{module.PLUGIN_NAME}/questions/<question_uuid>/action",
+        f"/{module.PLUGIN_NAME}/messages",
+        f"/{module.PLUGIN_NAME}/messages/action",
         f"/{module.PLUGIN_NAME}/repairs",
         f"/{module.PLUGIN_NAME}/repairs/action",
         f"/{module.PLUGIN_NAME}/attachments/<sha256>",
@@ -572,6 +574,51 @@ def test_page_can_attach_unarchived_follow_up_to_existing_question(
         "editor": "tester",
     }
     assert scheduled == [("existing-question", False)]
+
+
+def test_page_can_reassign_complete_message_turns(monkeypatch, tmp_path: Path) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    plugin = module.KaoyanArchivePlugin(_FakeContext(), _Config())
+    captured = {}
+    scheduled = []
+
+    async def request_json(default=None):
+        return {
+            "action": "assign",
+            "ids": ["17"],
+            "question_uuid": "target-question",
+        }
+
+    async def reassign_message_turns(**kwargs):
+        captured.update(kwargs)
+        return {
+            "selected_event_count": 1,
+            "event_count": 2,
+            "event_ids": [17, 18],
+            "question_uuid": "target-question",
+            "affected_questions": ["old-question", "target-question"],
+            "queued_questions": ["old-question", "target-question"],
+            "abandoned_questions": [],
+        }
+
+    module.request.json = request_json
+    plugin.store.reassign_message_turns = reassign_message_turns
+    plugin._schedule_archive = lambda question_uuid, notify: scheduled.append(
+        (question_uuid, notify)
+    )
+
+    result = asyncio.run(plugin.web_messages_action())
+
+    assert result["saved"] is True
+    assert captured == {
+        "event_ids": [17],
+        "question_uuid": "target-question",
+        "editor": "tester",
+    }
+    assert scheduled == [
+        ("old-question", False),
+        ("target-question", False),
+    ]
 
 
 def test_agent_done_reconciles_late_answer_with_parent_question(
