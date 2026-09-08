@@ -50,6 +50,8 @@ def test_page_has_batch_repair_center_and_collapsed_excluded_events() -> None:
     assert 'runRepairAction("manual_question")' in script
     assert 'runRepairAction("manual_instruction")' in script
     assert 'runRepairAction("manual_archive")' in script
+    assert 'runRepairAction("manual_cancel")' in script
+    assert 'id="repair-cancel"' in document
 
 
 def test_page_has_all_messages_membership_manager() -> None:
@@ -61,6 +63,7 @@ def test_page_has_all_messages_membership_manager() -> None:
     assert 'id="message-target"' in document
     assert 'id="message-create"' not in document
     assert 'id="message-unarchive"' in document
+    assert '<option value="cancelled">已取消区间</option>' in document
     assert '{ label: "全部消息", value: stats.events ?? 0, view: "messages" }' in script
     assert 'apiPost("messages/action"' in script
     assert 'runMessageAction("assign")' in script

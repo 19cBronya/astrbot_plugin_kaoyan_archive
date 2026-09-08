@@ -75,7 +75,7 @@
           <div>
             <p class="section-kicker">ALL MESSAGES</p>
             <h2>全部消息</h2>
-            <p class="section-description">查看每条不可变原始消息及其题目关系。调整时按完整对话轮次移动用户消息和对应回复，结束边界与框架指令只读。</p>
+            <p class="section-description">查看每条不可变原始消息及其题目关系。调整时按完整对话轮次移动用户消息和对应回复，已取消消息仍可选择，结束/取消边界与框架指令只读。</p>
           </div>
           <button id="messages-back" class="button secondary" type="button">返回题目列表</button>
         </div>
@@ -104,6 +104,7 @@
               <option value="assigned">已进入题目正文</option>
               <option value="unarchived">未进入题目正文</option>
               <option value="excluded">存在排除记录</option>
+              <option value="cancelled">已取消区间</option>
               <option value="pending">待分类</option>
             </select>
           </label>
@@ -160,6 +161,7 @@
             <button id="repair-question" class="button secondary classification-action" type="button">标为题目内容</button>
             <button id="repair-instruction" class="button secondary classification-action" type="button">标为指令/无关消息</button>
             <button id="repair-archive" class="button secondary classification-action" type="button">标为结束边界</button>
+            <button id="repair-cancel" class="button secondary classification-action" type="button">标为取消区间</button>
           </div>
         </div>
         <div id="repair-list" class="repair-list" aria-live="polite"></div>

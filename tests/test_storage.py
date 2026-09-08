@@ -113,6 +113,112 @@ def test_intervals_do_not_cross_umo_or_previous_boundary(tmp_path: Path) -> None
     assert [e["body_text"] for e in second_source["events"]] == ["A2"]
 
 
+def test_cancelled_interval_is_skipped_but_remains_assignable(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    umo = "default:FriendMessage:cancelled"
+    cancelled_user = add_event(
+        store, umo=umo, direction="user", text="这道题问错了"
+    )
+    cancelled_answer = asyncio.run(
+        store.add_event(
+            umo=umo,
+            direction="assistant",
+            platform_message_id="cancelled-answer",
+            parent_event_id=cancelled_user,
+            sender_id="bot",
+            sender_name="bot",
+            kind="assistant",
+            text="错误方向的回答",
+            body_text="错误方向的回答",
+            components=[],
+            raw={},
+            is_command=False,
+            is_boundary=False,
+            boundary_rule="",
+            created_at=2,
+            provider_id="",
+            model_id="",
+            prompt_version="",
+        )
+    )
+    asyncio.run(
+        store.record_classification_failure(
+            cancelled_user,
+            "分类服务暂时不可用",
+        )
+    )
+    cancel_boundary = add_event(
+        store,
+        umo=umo,
+        direction="user",
+        text="这段取消掉",
+        body_text="",
+        boundary=True,
+    )
+
+    cancelled = asyncio.run(
+        store.cancel_interval(umo=umo, boundary_event_id=cancel_boundary)
+    )
+
+    assert cancelled["event_count"] == 2
+    assert asyncio.run(store.stats(umo=umo))["unarchived_messages"] == 0
+    assert asyncio.run(store.stats(umo=umo))["pending_classifications"] == 0
+    assert asyncio.run(store.list_pending_classifications(limit=20)) == []
+    listed = asyncio.run(
+        store.list_messages(umo=umo, ownership="cancelled", limit=20)
+    )
+    assert [item["id"] for item in listed["items"]] == [
+        cancelled_answer,
+        cancelled_user,
+    ]
+    assert all(item["is_cancelled"] for item in listed["items"])
+    assert all(item["movable"] for item in listed["items"])
+
+    new_user = add_event(store, umo=umo, direction="user", text="这才是新题")
+    new_boundary = add_event(
+        store,
+        umo=umo,
+        direction="user",
+        text="问完了",
+        body_text="",
+        boundary=True,
+    )
+    question = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=new_boundary)
+    )
+    assert question and question["event_count"] == 1
+    source = asyncio.run(store.question_source(question["uuid"]))
+    assert source and [event["id"] for event in source["events"]] == [new_user]
+
+    assert asyncio.run(store.claim_job(question["uuid"]))
+    asyncio.run(
+        store.complete_question(
+            question_uuid=question["uuid"],
+            subject="数学",
+            title="新题",
+            summary="新题总结",
+            provider_id="test",
+            model_id="test",
+            prompt_version="test",
+        )
+    )
+    moved = asyncio.run(
+        store.reassign_message_turns(
+            event_ids=[cancelled_user],
+            question_uuid=question["uuid"],
+            editor="tester",
+        )
+    )
+    assert moved["event_ids"] == [cancelled_user, cancelled_answer]
+    source = asyncio.run(store.question_source(question["uuid"]))
+    assert source
+    assert [event["id"] for event in source["events"]] == [
+        new_user,
+        cancelled_user,
+        cancelled_answer,
+    ]
+
+
 def test_subject_counter_is_transactional(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     umo = "default:FriendMessage:counter"
@@ -235,7 +341,7 @@ def test_schema_migrates_existing_questions_for_derived_archive_fields(tmp_path:
         db.execute("ALTER TABLE questions DROP COLUMN knowledge_points_json")
         db.execute("ALTER TABLE questions DROP COLUMN overview")
         db.execute("ALTER TABLE questions DROP COLUMN is_manual")
-        db.execute("DELETE FROM schema_migrations WHERE version IN (2,3,4,5,6,7)")
+        db.execute("DELETE FROM schema_migrations WHERE version IN (2,3,4,5,6,7,8)")
 
     asyncio.run(store.initialize())
     detail = asyncio.run(store.question_detail(question["uuid"]))
@@ -254,9 +360,14 @@ def test_schema_migrates_existing_questions_for_derived_archive_fields(tmp_path:
     assert "overview" in columns
     assert "is_manual" in columns
     assert "rerun_requested" in archive_job_columns
-    assert 7 in versions
+    assert 8 in versions
     assert "question_revisions" in tables
-    assert {"classification_jobs", "classification_revisions"} <= tables
+    assert {
+        "classification_jobs",
+        "classification_revisions",
+        "cancellations",
+        "cancelled_events",
+    } <= tables
     assert detail
     assert "资源分配" in detail["overview"]
 

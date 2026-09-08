@@ -509,7 +509,12 @@ function actionButton(label, kind, handler) {
 }
 
 function messageRoleLabel(entry) {
-  if (entry.is_boundary) return "结束边界";
+  if (entry.is_boundary) {
+    const rule = String(entry.boundary_rule || "").toLowerCase();
+    return entry.effective_kind === "cancel" || rule.includes("cancel")
+      ? "取消边界"
+      : "结束边界";
+  }
   if (entry.is_command) return "框架指令";
   if (entry.direction === "user") return "用户";
   if (entry.direction === "assistant") return "助手";
@@ -594,7 +599,9 @@ function renderMessages() {
       ? active.map((item) =>
         `${item.public_id || "未编号"}${item.deleted_at ? "（已删除）" : ""}`,
       ).join(" / ")
-      : entry.is_boundary || entry.is_command ? "只读" : "未归档";
+      : entry.is_cancelled
+        ? "已取消"
+        : entry.is_boundary || entry.is_command ? "只读" : "未归档";
     const time = document.createElement("span");
     time.className = "message-compact-time";
     time.textContent = dateTime(entry.created_at);
@@ -648,7 +655,9 @@ function renderMessageExpanded(content, entry) {
   memberships.className = "message-memberships";
   const active = activeMemberships(entry);
   if (!active.length && !entry.is_boundary && !entry.is_command) {
-    memberships.append(badge("未归档", "warn"));
+    memberships.append(badge(entry.is_cancelled ? "已取消" : "未归档", "warn"));
+  } else if (entry.is_cancelled) {
+    memberships.append(badge("曾属于取消区间"));
   }
   for (const membership of entry.memberships || []) {
     const relation = relationLabel(membership.relation);
@@ -850,6 +859,7 @@ async function runRepairAction(action) {
     manual_question: "标为题目内容",
     manual_instruction: "标为指令/无关消息",
     manual_archive: "标为结束边界",
+    manual_cancel: "标为取消区间",
     retry_archive: "重新调用整理模型",
   };
   if (!await confirmAction(
@@ -1026,6 +1036,7 @@ $("repair-ai").addEventListener("click", () => runRepairAction(
 $("repair-question").addEventListener("click", () => runRepairAction("manual_question"));
 $("repair-instruction").addEventListener("click", () => runRepairAction("manual_instruction"));
 $("repair-archive").addEventListener("click", () => runRepairAction("manual_archive"));
+$("repair-cancel").addEventListener("click", () => runRepairAction("manual_cancel"));
 function closeDetail() {
   state.editing = false;
   $("detail-overlay").classList.add("hidden");

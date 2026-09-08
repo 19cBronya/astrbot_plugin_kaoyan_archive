@@ -12,7 +12,7 @@ from .attachments import CapturedAttachment
 from .utils import canonical_json, utc_timestamp
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 class ArchiveStore:
@@ -167,6 +167,26 @@ class ArchiveStore:
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_event_primary_question
                     ON question_events(event_id)
                     WHERE relation = 'primary';
+
+                CREATE TABLE IF NOT EXISTS cancellations (
+                    boundary_event_id INTEGER PRIMARY KEY REFERENCES events(id),
+                    umo TEXT NOT NULL,
+                    start_event_id INTEGER,
+                    event_count INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_cancellations_umo_boundary
+                    ON cancellations(umo, boundary_event_id);
+
+                CREATE TABLE IF NOT EXISTS cancelled_events (
+                    boundary_event_id INTEGER NOT NULL
+                        REFERENCES cancellations(boundary_event_id),
+                    event_id INTEGER NOT NULL REFERENCES events(id),
+                    ordinal INTEGER NOT NULL,
+                    PRIMARY KEY(boundary_event_id, event_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_cancelled_events_event
+                    ON cancelled_events(event_id);
 
                 CREATE TABLE IF NOT EXISTS subject_counters (
                     subject TEXT PRIMARY KEY,
@@ -401,6 +421,9 @@ class ArchiveStore:
                 JOIN events e ON e.id=cj.event_id
                 LEFT JOIN event_attachments ea ON ea.event_id=e.id
                 WHERE cj.status <> 'DONE'
+                  AND NOT EXISTS(
+                      SELECT 1 FROM cancelled_events ce WHERE ce.event_id=e.id
+                  )
                 GROUP BY e.id
                 ORDER BY e.id DESC LIMIT ?
                 """,
@@ -474,6 +497,13 @@ class ArchiveStore:
                 "EXISTS(SELECT 1 FROM classification_jobs cj WHERE cj.event_id=e.id "
                 "AND cj.status<>'DONE')"
             )
+            clauses.append(
+                "NOT EXISTS(SELECT 1 FROM cancelled_events ce WHERE ce.event_id=e.id)"
+            )
+        elif ownership == "cancelled":
+            clauses.append(
+                "EXISTS(SELECT 1 FROM cancelled_events ce WHERE ce.event_id=e.id)"
+            )
         if search:
             pattern = f"%{search[:100]}%"
             clauses.append(
@@ -507,6 +537,9 @@ class ArchiveStore:
                            SELECT cj.error FROM classification_jobs cj
                            WHERE cj.event_id=e.id
                        ), '') AS classification_error,
+                       EXISTS(
+                           SELECT 1 FROM cancelled_events ce WHERE ce.event_id=e.id
+                       ) AS is_cancelled,
                        COALESCE((
                            SELECT json_group_array(json_object(
                                'sha256', ea.sha256,
@@ -820,6 +853,9 @@ class ArchiveStore:
                       SELECT 1 FROM question_events qe
                       WHERE qe.event_id=e.id
                         AND qe.relation IN ('primary','supplement')
+                  )
+                  AND NOT EXISTS(
+                      SELECT 1 FROM cancelled_events ce WHERE ce.event_id=e.id
                   )
                 GROUP BY e.id
                 ORDER BY e.id DESC LIMIT ?
@@ -1273,7 +1309,7 @@ class ArchiveStore:
 
     def _complete_classification_sync(self, **values: Any) -> list[str]:
         kind = str(values["kind"])
-        if kind not in {"question", "instruction", "archive"}:
+        if kind not in {"question", "instruction", "archive", "cancel"}:
             raise ValueError("unsupported classification kind")
         event_id = int(values["event_id"])
         with self._lock, self._connect() as db:
@@ -1552,11 +1588,15 @@ class ArchiveStore:
                 return None
             previous = db.execute(
                 """
-                SELECT MAX(boundary_event_id) AS boundary_id
-                FROM questions
-                WHERE umo=? AND boundary_event_id < ? AND is_manual=0
+                SELECT MAX(boundary_event_id) AS boundary_id FROM (
+                    SELECT boundary_event_id FROM questions
+                    WHERE umo=? AND boundary_event_id < ? AND is_manual=0
+                    UNION ALL
+                    SELECT boundary_event_id FROM cancellations
+                    WHERE umo=? AND boundary_event_id < ?
+                )
                 """,
-                (umo, boundary_event_id),
+                (umo, boundary_event_id, umo, boundary_event_id),
             ).fetchone()["boundary_id"]
             start_id = int(previous or 0)
             rows = db.execute(
@@ -1681,6 +1721,103 @@ class ArchiveStore:
             db.commit()
             return dict(
                 db.execute("SELECT * FROM questions WHERE uuid=?", (question_uuid,)).fetchone()
+            )
+
+    async def cancel_interval(
+        self,
+        *,
+        umo: str,
+        boundary_event_id: int,
+    ) -> dict[str, Any]:
+        return self._cancel_interval_sync(umo, boundary_event_id)
+
+    def _cancel_interval_sync(
+        self,
+        umo: str,
+        boundary_event_id: int,
+    ) -> dict[str, Any]:
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute(
+                "SELECT * FROM cancellations WHERE boundary_event_id=?",
+                (boundary_event_id,),
+            ).fetchone()
+            if existing:
+                db.commit()
+                return dict(existing)
+            boundary = db.execute(
+                "SELECT * FROM events WHERE id=? AND umo=? AND is_boundary=1",
+                (boundary_event_id, umo),
+            ).fetchone()
+            if not boundary:
+                db.rollback()
+                raise ValueError("cancel boundary event not found")
+            previous = db.execute(
+                """
+                SELECT MAX(boundary_event_id) AS boundary_id FROM (
+                    SELECT boundary_event_id FROM questions
+                    WHERE umo=? AND boundary_event_id < ? AND is_manual=0
+                    UNION ALL
+                    SELECT boundary_event_id FROM cancellations
+                    WHERE umo=? AND boundary_event_id < ?
+                )
+                """,
+                (umo, boundary_event_id, umo, boundary_event_id),
+            ).fetchone()["boundary_id"]
+            start_id = int(previous or 0)
+            rows = db.execute(
+                """
+                SELECT e.id FROM events e
+                WHERE e.umo=? AND e.id>? AND e.id<?
+                  AND e.is_command=0 AND e.is_boundary=0
+                  AND NOT EXISTS(
+                      SELECT 1 FROM question_events qe
+                      WHERE qe.event_id=e.id
+                        AND qe.relation IN ('primary','supplement','answer')
+                  )
+                ORDER BY e.id
+                """,
+                (umo, start_id, boundary_event_id),
+            ).fetchall()
+            now = utc_timestamp()
+            db.execute(
+                """
+                INSERT INTO cancellations(
+                    boundary_event_id,umo,start_event_id,event_count,created_at
+                ) VALUES(?,?,?,?,?)
+                """,
+                (
+                    boundary_event_id,
+                    umo,
+                    start_id or None,
+                    len(rows),
+                    now,
+                ),
+            )
+            for ordinal, row in enumerate(rows):
+                db.execute(
+                    """
+                    INSERT INTO cancelled_events(boundary_event_id,event_id,ordinal)
+                    VALUES(?,?,?)
+                    """,
+                    (boundary_event_id, int(row["id"]), ordinal),
+                )
+            self._audit(
+                db,
+                "cancel_interval",
+                "event",
+                str(boundary_event_id),
+                {
+                    "start_event_id": start_id,
+                    "event_ids": [int(row["id"]) for row in rows],
+                },
+            )
+            db.commit()
+            return dict(
+                db.execute(
+                    "SELECT * FROM cancellations WHERE boundary_event_id=?",
+                    (boundary_event_id,),
+                ).fetchone()
             )
 
     async def question_source(self, question_uuid: str) -> dict[str, Any] | None:
@@ -2147,6 +2284,9 @@ class ArchiveStore:
                 SELECT COUNT(*) AS c FROM classification_jobs cj
                 JOIN events e ON e.id=cj.event_id
                 WHERE cj.status <> 'DONE' {classification_where}
+                  AND NOT EXISTS(
+                      SELECT 1 FROM cancelled_events ce WHERE ce.event_id=e.id
+                  )
                 """,
                 params,
             ).fetchone()["c"]
@@ -2164,6 +2304,9 @@ class ArchiveStore:
                       SELECT 1 FROM question_events qe
                       WHERE qe.event_id=e.id
                         AND qe.relation IN ('primary','supplement')
+                  )
+                  AND NOT EXISTS(
+                      SELECT 1 FROM cancelled_events ce WHERE ce.event_id=e.id
                   )
                 """,
                 params,

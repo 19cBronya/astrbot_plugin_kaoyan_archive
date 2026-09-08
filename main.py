@@ -25,12 +25,15 @@ from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.11.2"
+PLUGIN_VERSION = "0.12.0"
 INLINE_IMAGE_MIME_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"}
 )
 FRAMEWORK_COMMANDS = frozenset({"status", "archive", "retry", "latest"})
+DIRECT_FRAMEWORK_COMMANDS = frozenset({"ok", "cancel"})
 FRAMEWORK_COMMAND_HELP = (
+    "/ok",
+    "/cancel",
     "/kaoyan status",
     "/kaoyan archive",
     "/kaoyan retry [题号]",
@@ -136,6 +139,19 @@ class KaoyanArchivePlugin(Star):
             )
             if question and question["status"] == "FINALIZING":
                 self._schedule_archive(question["uuid"], notify=True)
+        elif analysis.kind is MessageKind.CANCEL:
+            boundary_event_id = await self.store.mark_boundary(
+                event_id,
+                analysis.matched_rule or "soft-cancel",
+            )
+            cancelled = await self.store.cancel_interval(
+                umo=event.unified_msg_origin,
+                boundary_event_id=boundary_event_id,
+            )
+            await self.context.send_message(
+                event.unified_msg_origin,
+                MessageChain([Plain(self._cancel_result_notice(cancelled))]),
+            )
 
     @filter.on_agent_done(priority=-100)
     async def capture_agent_response(self, event, run_context, resp) -> None:
@@ -150,6 +166,7 @@ class KaoyanArchivePlugin(Star):
             in {
                 MessageKind.INSTRUCTION.value,
                 MessageKind.ARCHIVE.value,
+                MessageKind.CANCEL.value,
                 MessageKind.PENDING.value,
             }
         )
@@ -171,7 +188,8 @@ class KaoyanArchivePlugin(Star):
             is_command=excluded
             and analysis_data.get("kind") == MessageKind.INSTRUCTION.value,
             is_boundary=excluded
-            and analysis_data.get("kind") == MessageKind.ARCHIVE.value,
+            and analysis_data.get("kind")
+            in {MessageKind.ARCHIVE.value, MessageKind.CANCEL.value},
             boundary_rule=analysis_data.get("intent", ""),
             created_at=utc_timestamp(),
             provider_id=provider_id,
@@ -183,6 +201,28 @@ class KaoyanArchivePlugin(Star):
         )
         for question_uuid in affected_questions:
             self._schedule_archive(question_uuid, notify=False)
+
+    @filter.command("ok")
+    async def command_ok(self, event: AstrMessageEvent):
+        """结束当前题目并提交归档。"""
+        if not self._should_process(event):
+            return
+        yield event.plain_result(
+            await self._submit_archive_command(event, "ok", "/ok")
+        )
+
+    @filter.command("cancel")
+    async def command_cancel(self, event: AstrMessageEvent):
+        """放弃上次边界之后的当前对话区间。"""
+        if not self._should_process(event):
+            return
+        event_id = await self._ensure_framework_command_event(event, "cancel")
+        boundary_event_id = await self.store.mark_boundary(int(event_id), "/cancel")
+        cancelled = await self.store.cancel_interval(
+            umo=event.unified_msg_origin,
+            boundary_event_id=boundary_event_id,
+        )
+        yield event.plain_result(self._cancel_result_notice(cancelled))
 
     @filter.command_group("kaoyan")
     def kaoyan_commands(self):
@@ -206,19 +246,13 @@ class KaoyanArchivePlugin(Star):
     async def command_archive(self, event: AstrMessageEvent):
         if not self._should_process(event):
             return
-        event_id = await self._ensure_framework_command_event(event, "archive")
-        boundary_event_id = await self.store.mark_boundary(
-            int(event_id), "/kaoyan archive"
+        yield event.plain_result(
+            await self._submit_archive_command(
+                event,
+                "archive",
+                "/kaoyan archive",
+            )
         )
-        question = await self.store.create_question_interval(
-            umo=event.unified_msg_origin,
-            boundary_event_id=boundary_event_id,
-        )
-        if not question or question["status"] == "EMPTY":
-            yield event.plain_result("当前区间没有可归档的题目内容。")
-            return
-        self._schedule_archive(question["uuid"], notify=True)
-        yield event.plain_result("已提交归档任务。")
 
     @kaoyan_commands.command("retry")
     async def command_retry(self, event: AstrMessageEvent, public_id: str = ""):
@@ -275,7 +309,7 @@ class KaoyanArchivePlugin(Star):
                 "classification": analysis.as_dict(),
             },
             is_command=analysis.kind is MessageKind.INSTRUCTION,
-            is_boundary=analysis.kind is MessageKind.ARCHIVE,
+            is_boundary=analysis.kind in {MessageKind.ARCHIVE, MessageKind.CANCEL},
             boundary_rule=analysis.matched_rule,
             created_at=float(getattr(message_obj, "timestamp", 0) or utc_timestamp()),
             provider_id=analysis.provider_id,
@@ -320,6 +354,25 @@ class KaoyanArchivePlugin(Star):
         event.set_extra(f"{PLUGIN_NAME}:event_id", event_id)
         event.set_extra(f"{PLUGIN_NAME}:analysis", analysis.as_dict())
         return event_id
+
+    async def _submit_archive_command(
+        self,
+        event: AstrMessageEvent,
+        command_name: str,
+        boundary_rule: str,
+    ) -> str:
+        event_id = await self._ensure_framework_command_event(event, command_name)
+        boundary_event_id = await self.store.mark_boundary(
+            int(event_id), boundary_rule
+        )
+        question = await self.store.create_question_interval(
+            umo=event.unified_msg_origin,
+            boundary_event_id=boundary_event_id,
+        )
+        if not question or question["status"] == "EMPTY":
+            return "当前区间没有可归档的题目内容。"
+        self._schedule_archive(question["uuid"], notify=True)
+        return "已提交归档任务。"
 
     async def _recover_pending_jobs(self) -> None:
         await self.store.recover_classification_jobs()
@@ -465,6 +518,15 @@ class KaoyanArchivePlugin(Star):
             )
             if question and question["status"] == "FINALIZING":
                 self._schedule_archive(question["uuid"], notify=False)
+        elif result.kind is MessageKind.CANCEL:
+            boundary_event_id = await self.store.mark_boundary(
+                int(item["id"]),
+                result.matched_rule or "manual-cancel",
+            )
+            await self.store.cancel_interval(
+                umo=str(item["umo"]),
+                boundary_event_id=boundary_event_id,
+            )
 
     def _register_web_apis(self) -> None:
         routes = [
@@ -505,7 +567,7 @@ class KaoyanArchivePlugin(Star):
                     "enabled": self._cfg_bool("enabled", True),
                     "umo_whitelist": self._umo_whitelist(),
                     "subjects": self._cfg_list("subjects"),
-                    "classifier_mode": "每条自然语言消息由 LLM 判断：问题 / 归档 / 其他指令",
+                    "classifier_mode": "每条自然语言消息由 LLM 判断：问题 / 归档 / 取消 / 其他指令",
                     "classification_provider_id": str(
                         self.config.get("classification_provider_id", "") or ""
                     ),
@@ -560,7 +622,14 @@ class KaoyanArchivePlugin(Star):
         ownership = str(request.query.get("ownership", "") or "")
         if direction not in {"", "user", "assistant", "control"}:
             return error_response("invalid direction filter", status_code=400)
-        if ownership not in {"", "assigned", "unarchived", "excluded", "pending"}:
+        if ownership not in {
+            "",
+            "assigned",
+            "unarchived",
+            "excluded",
+            "pending",
+            "cancelled",
+        }:
             return error_response("invalid ownership filter", status_code=400)
         result = await self.store.list_messages(
             umo=str(request.query.get("umo", "") or ""),
@@ -691,6 +760,7 @@ class KaoyanArchivePlugin(Star):
                 "manual_question": MessageKind.QUESTION,
                 "manual_instruction": MessageKind.INSTRUCTION,
                 "manual_archive": MessageKind.ARCHIVE,
+                "manual_cancel": MessageKind.CANCEL,
             }
             kind = manual_kinds.get(action)
             if kind is None:
@@ -870,6 +940,8 @@ class KaoyanArchivePlugin(Star):
     @staticmethod
     def _framework_command_name(text: str) -> str:
         parts = text.strip().lower().split()
+        if len(parts) == 1 and parts[0].lstrip("/") in DIRECT_FRAMEWORK_COMMANDS:
+            return parts[0].lstrip("/")
         if (
             len(parts) >= 2
             and parts[0] in {"kaoyan", "/kaoyan"}
@@ -983,6 +1055,13 @@ class KaoyanArchivePlugin(Star):
         return (
             f"已归档为 {result.public_id}｜{result.title}\n"
             f"科目：{result.subject}，收录 {result.event_count} 条有效消息。{suffix}"
+        )
+
+    @staticmethod
+    def _cancel_result_notice(cancelled: dict[str, Any]) -> str:
+        return (
+            f"已取消当前区间，标记 {int(cancelled.get('event_count') or 0)} 条消息为无效。"
+            "原始消息仍可在归档页面重新归入其他题目。"
         )
 
     @staticmethod

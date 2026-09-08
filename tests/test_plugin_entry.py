@@ -36,6 +36,10 @@ class _Filter:
 
         return decorate
 
+    @staticmethod
+    def command(*_args, **_kwargs):
+        return lambda function: function
+
 
 class _Star:
     def __init__(self, context):
@@ -46,6 +50,7 @@ class _FakeContext:
     def __init__(self) -> None:
         self.routes = []
         self.llm_calls = []
+        self.sent_messages = []
         self.runtime_configs = {}
         self.astrbot_config_mgr = SimpleNamespace(
             get_conf_info=lambda umo: {
@@ -73,6 +78,9 @@ class _FakeContext:
             ),
             raw_completion=SimpleNamespace(model="classifier-model"),
         )
+
+    async def send_message(self, umo, chain):
+        self.sent_messages.append((umo, chain))
 
 
 class _Config(dict):
@@ -702,3 +710,227 @@ def test_registered_framework_command_skips_classifier(monkeypatch, tmp_path: Pa
     assert extras[f"{module.PLUGIN_NAME}:analysis"]["intent"] == (
         "framework-command:status"
     )
+
+
+def test_short_framework_commands_are_detected_after_astrbot_prefix_handling(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+
+    assert module.KaoyanArchivePlugin._framework_command_name("ok") == "ok"
+    assert module.KaoyanArchivePlugin._framework_command_name("/ok") == "ok"
+    assert module.KaoyanArchivePlugin._framework_command_name("cancel") == "cancel"
+    assert module.KaoyanArchivePlugin._framework_command_name("/cancel") == "cancel"
+
+
+def test_registered_cancel_command_marks_interval_without_classifier(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    umo = "default:FriendMessage:10001"
+    context = _FakeContext()
+    plugin = module.KaoyanArchivePlugin(
+        context,
+        _Config(enabled=True, umo_whitelist=[umo]),
+    )
+    asyncio.run(plugin.initialize())
+    asyncio.run(
+        plugin.store.add_event(
+            umo=umo,
+            direction="user",
+            platform_message_id="question-before-cancel",
+            parent_event_id=None,
+            sender_id="10001",
+            sender_name="student",
+            kind="question",
+            text="这段题目问错了",
+            body_text="这段题目问错了",
+            components=[],
+            raw={},
+            is_command=False,
+            is_boundary=False,
+            boundary_rule="",
+            created_at=1,
+            provider_id="",
+            model_id="",
+            prompt_version="",
+        )
+    )
+    extras = {}
+    event = SimpleNamespace(
+        is_private_chat=lambda: True,
+        unified_msg_origin=umo,
+        message_str="cancel",
+        message_obj=SimpleNamespace(
+            message_id="cancel-command",
+            timestamp=2,
+            raw_message={"message": "/cancel"},
+        ),
+        get_messages=lambda: [],
+        get_sender_id=lambda: "10001",
+        get_sender_name=lambda: "student",
+        get_extra=lambda key, default=None: extras.get(key, default),
+        set_extra=lambda key, value: extras.__setitem__(key, value),
+        plain_result=lambda value: value,
+    )
+
+    async def invoke():
+        return [item async for item in plugin.command_cancel(event)]
+
+    replies = asyncio.run(invoke())
+    cancelled = asyncio.run(
+        plugin.store.list_messages(umo=umo, ownership="cancelled", limit=20)
+    )
+
+    assert context.llm_calls == []
+    assert replies == [
+        "已取消当前区间，标记 1 条消息为无效。原始消息仍可在归档页面重新归入其他题目。"
+    ]
+    assert [item["text"] for item in cancelled["items"]] == ["这段题目问错了"]
+
+
+def test_registered_ok_command_creates_archive_boundary_without_classifier(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    umo = "default:FriendMessage:10001"
+    context = _FakeContext()
+    plugin = module.KaoyanArchivePlugin(
+        context,
+        _Config(enabled=True, umo_whitelist=[umo]),
+    )
+    asyncio.run(plugin.initialize())
+    asyncio.run(
+        plugin.store.add_event(
+            umo=umo,
+            direction="user",
+            platform_message_id="question-before-ok",
+            parent_event_id=None,
+            sender_id="10001",
+            sender_name="student",
+            kind="question",
+            text="操作系统中的死锁是什么？",
+            body_text="操作系统中的死锁是什么？",
+            components=[],
+            raw={},
+            is_command=False,
+            is_boundary=False,
+            boundary_rule="",
+            created_at=1,
+            provider_id="",
+            model_id="",
+            prompt_version="",
+        )
+    )
+    extras = {}
+    event = SimpleNamespace(
+        is_private_chat=lambda: True,
+        unified_msg_origin=umo,
+        message_str="ok",
+        message_obj=SimpleNamespace(
+            message_id="ok-command",
+            timestamp=2,
+            raw_message={"message": "/ok"},
+        ),
+        get_messages=lambda: [],
+        get_sender_id=lambda: "10001",
+        get_sender_name=lambda: "student",
+        get_extra=lambda key, default=None: extras.get(key, default),
+        set_extra=lambda key, value: extras.__setitem__(key, value),
+        plain_result=lambda value: value,
+    )
+    scheduled = []
+    plugin._schedule_archive = lambda uuid, notify: scheduled.append((uuid, notify))
+
+    async def invoke():
+        return [item async for item in plugin.command_ok(event)]
+
+    replies = asyncio.run(invoke())
+    questions = asyncio.run(
+        plugin.store.list_questions(
+            umo=umo,
+            subject="",
+            status="FINALIZING",
+            search="",
+            include_deleted=False,
+            limit=20,
+            offset=0,
+        )
+    )
+
+    assert context.llm_calls == []
+    assert replies == ["已提交归档任务。"]
+    assert len(questions) == 1
+    assert scheduled == [(questions[0]["uuid"], True)]
+
+
+def test_natural_language_cancel_uses_classifier_and_marks_interval(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    umo = "default:FriendMessage:10001"
+    context = _FakeContext()
+    plugin = module.KaoyanArchivePlugin(
+        context,
+        _Config(enabled=True, umo_whitelist=[umo]),
+    )
+    asyncio.run(plugin.initialize())
+    asyncio.run(
+        plugin.store.add_event(
+            umo=umo,
+            direction="user",
+            platform_message_id="mistaken-question",
+            parent_event_id=None,
+            sender_id="10001",
+            sender_name="student",
+            kind="question",
+            text="刚才题目发错了",
+            body_text="刚才题目发错了",
+            components=[],
+            raw={},
+            is_command=False,
+            is_boundary=False,
+            boundary_rule="",
+            created_at=1,
+            provider_id="",
+            model_id="",
+            prompt_version="",
+        )
+    )
+
+    async def classify(**_kwargs):
+        return module.AnalysisResult(
+            kind=module.MessageKind.CANCEL,
+            body_text="",
+            intent="cancel_current_interval",
+            confidence=0.99,
+            provider_id="classifier-provider",
+            model_id="classifier-model",
+            prompt_version="message-classifier-v2:test",
+        )
+
+    plugin.classifier.classify = classify
+    extras = {}
+    event = SimpleNamespace(
+        is_private_chat=lambda: True,
+        unified_msg_origin=umo,
+        message_str="这段讨论作废，不要归档",
+        message_obj=SimpleNamespace(
+            message_id="soft-cancel",
+            timestamp=2,
+            raw_message={"message": "这段讨论作废，不要归档"},
+        ),
+        get_messages=lambda: [],
+        get_sender_id=lambda: "10001",
+        get_sender_name=lambda: "student",
+        set_extra=lambda key, value: extras.__setitem__(key, value),
+    )
+
+    asyncio.run(plugin.capture_private_message(event))
+    cancelled = asyncio.run(
+        plugin.store.list_messages(umo=umo, ownership="cancelled", limit=20)
+    )
+
+    assert [item["text"] for item in cancelled["items"]] == ["刚才题目发错了"]
+    assert extras[f"{module.PLUGIN_NAME}:analysis"]["kind"] == "cancel"
+    assert len(context.sent_messages) == 1

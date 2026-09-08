@@ -59,7 +59,7 @@ def test_question_is_classified_by_llm() -> None:
     assert result.body_text == "为什么进程切换比线程切换慢？"
     assert result.provider_id == "classifier-provider"
     assert result.model_id == "classifier-model"
-    assert result.prompt_version.startswith("message-classifier-v1:")
+    assert result.prompt_version.startswith("message-classifier-v2:")
     assert len(context.calls) == 1
     assert context.calls[0]["system_prompt"] == CLASSIFIER_SYSTEM_PROMPT
 
@@ -91,6 +91,21 @@ def test_soft_instruction_is_excluded_from_question_body() -> None:
     assert result.kind is MessageKind.INSTRUCTION
     assert result.body_text == ""
     assert result.intent == "query_history"
+
+
+def test_soft_cancel_marks_the_current_interval_invalid() -> None:
+    result, _ = classify(
+        {
+            "kind": "cancel",
+            "content": "这段不应进入正文",
+            "intent": "cancel_current_interval",
+            "confidence": 0.99,
+        },
+        "这段问错了，取消掉",
+    )
+    assert result.kind is MessageKind.CANCEL
+    assert result.body_text == ""
+    assert result.intent == "cancel_current_interval"
 
 
 def test_invalid_classifier_output_waits_for_repair_without_polluting_question() -> None:
