@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.12.3
+
+- 明确 `instruction` 是归档器的统一排除类：除归档管理操作外，也包括提醒、天气、音乐、设备操作等其他工具请求及与考研题目无关的普通聊天。
+- 分类 Prompt 升级至 `message-classifier-v5`，增加“五小时后提醒我吃药”等明确反例，并使用 `unrelated_request` / `unrelated_chat` intent 保留排除原因；不新增行为完全相同的 `others` 类型。
+
 ## v0.12.2
 
 - 收紧 `archive` 定义：必须明确表达题目结束，或明确执行归档/入库；仅要求“总结、整理、归纳、梳理题目”统一视为继续答疑。

@@ -25,7 +25,7 @@ from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.12.2"
+PLUGIN_VERSION = "0.12.3"
 INLINE_IMAGE_MIME_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"}
 )
@@ -594,7 +594,7 @@ class KaoyanArchivePlugin(Star):
                     "enabled": self._cfg_bool("enabled", True),
                     "umo_whitelist": self._umo_whitelist(),
                     "subjects": self._cfg_list("subjects"),
-                    "classifier_mode": "每条自然语言消息由 LLM 判断：问题 / 归档 / 取消 / 其他指令",
+                    "classifier_mode": "每条自然语言消息由 LLM 判断：问题 / 归档 / 取消 / 指令或无关消息",
                     "classification_provider_id": str(
                         self.config.get("classification_provider_id", "") or ""
                     ),

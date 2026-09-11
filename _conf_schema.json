@@ -14,7 +14,7 @@
   "classification_provider_id": {
     "type": "string",
     "description": "逐消息分类 Provider",
-    "hint": "每条白名单私聊的自然语言消息都会调用一次该模型，判断为问题、归档边界或其他软指令。留空时使用该 UMO 当前聊天 Provider。",
+    "hint": "每条白名单私聊的自然语言消息都会调用一次该模型，判断为问题、归档边界、取消边界或指令/无关消息。留空时使用该 UMO 当前聊天 Provider。",
     "default": "",
     "_special": "select_provider"
   },
