@@ -59,7 +59,7 @@ def test_question_is_classified_by_llm() -> None:
     assert result.body_text == "为什么进程切换比线程切换慢？"
     assert result.provider_id == "classifier-provider"
     assert result.model_id == "classifier-model"
-    assert result.prompt_version.startswith("message-classifier-v6:")
+    assert result.prompt_version.startswith("message-classifier-v7:")
     assert len(context.calls) == 1
     assert context.calls[0]["system_prompt"] == CLASSIFIER_SYSTEM_PROMPT
 
@@ -144,11 +144,44 @@ def test_explicit_finish_overrides_wrong_question_classification() -> None:
     assert "explicit finish semantics" in result.warning
 
 
+def test_ok_then_organize_question_is_an_archive_boundary() -> None:
+    result, _ = classify(
+        {
+            "kind": "question",
+            "content": "ok了，整理一下这道题目的思路",
+            "intent": "study_summary_request",
+            "confidence": 0.88,
+        },
+        "ok了，整理一下这道题目的思路",
+    )
+
+    assert result.kind is MessageKind.ARCHIVE
+    assert result.body_text == ""
+    assert result.intent == "explicit_finish_boundary"
+
+
+def test_organize_question_thoughts_without_ok_remains_question() -> None:
+    text = "整理一下这道题目的思路"
+    result, _ = classify(
+        {
+            "kind": "archive",
+            "content": "",
+            "intent": "finish_and_archive",
+            "confidence": 0.9,
+        },
+        text,
+    )
+
+    assert result.kind is MessageKind.QUESTION
+    assert result.body_text == text
+
+
 def test_negated_question_and_hypothetical_finish_phrases_do_not_force_archive() -> None:
     for text in (
         "我还没问完，继续讲",
         "我问完了吗？",
         "如果我说我问完了，你会怎么处理？",
+        "比如我说ok了整理一下这道题，你会归档吗？",
     ):
         result, _ = classify(
             {
