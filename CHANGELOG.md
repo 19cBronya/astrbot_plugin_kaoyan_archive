@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.12.6
+
+- 将分类 Prompt 中的单一“没有 ok 了”改为通用的“没有任何明确结束表达”，并列出 `ok/ok了`、`好了`、`行了` 等结束示例。
+- 新增“好了/行了 + 整理或归纳题目”的回归测试，确保它们与单纯整理请求正确区分；分类 Prompt 升级至 `message-classifier-v8`。
+
 ## v0.12.5
 
 - 分类 Prompt 升级至 `message-classifier-v7`，增加“整理一下这道题目的思路 → question”与“ok了，整理一下这道题目的思路 → archive”的成对示例。

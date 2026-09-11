@@ -59,7 +59,7 @@ def test_question_is_classified_by_llm() -> None:
     assert result.body_text == "为什么进程切换比线程切换慢？"
     assert result.provider_id == "classifier-provider"
     assert result.model_id == "classifier-model"
-    assert result.prompt_version.startswith("message-classifier-v7:")
+    assert result.prompt_version.startswith("message-classifier-v8:")
     assert len(context.calls) == 1
     assert context.calls[0]["system_prompt"] == CLASSIFIER_SYSTEM_PROMPT
 
@@ -158,6 +158,25 @@ def test_ok_then_organize_question_is_an_archive_boundary() -> None:
     assert result.kind is MessageKind.ARCHIVE
     assert result.body_text == ""
     assert result.intent == "explicit_finish_boundary"
+
+
+def test_equivalent_finish_words_then_organize_are_archive_boundaries() -> None:
+    for text in (
+        "好了，整理一下这道题目的思路",
+        "行了，归纳一下本题",
+    ):
+        result, _ = classify(
+            {
+                "kind": "question",
+                "content": text,
+                "intent": "study_summary_request",
+                "confidence": 0.85,
+            },
+            text,
+        )
+        assert result.kind is MessageKind.ARCHIVE
+        assert result.body_text == ""
+        assert result.intent == "explicit_finish_boundary"
 
 
 def test_organize_question_thoughts_without_ok_remains_question() -> None:
