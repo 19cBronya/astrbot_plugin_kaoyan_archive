@@ -59,7 +59,7 @@ def test_question_is_classified_by_llm() -> None:
     assert result.body_text == "为什么进程切换比线程切换慢？"
     assert result.provider_id == "classifier-provider"
     assert result.model_id == "classifier-model"
-    assert result.prompt_version.startswith("message-classifier-v3:")
+    assert result.prompt_version.startswith("message-classifier-v4:")
     assert len(context.calls) == 1
     assert context.calls[0]["system_prompt"] == CLASSIFIER_SYSTEM_PROMPT
 
@@ -94,6 +94,22 @@ def test_study_summary_request_is_not_accepted_as_archive_boundary() -> None:
     assert result.body_text == "帮我总结本题题干、思路，以及总结题目类型和同类方法"
     assert result.intent == "study_summary_request"
     assert "corrected" in result.warning
+
+
+def test_organize_this_question_alone_is_not_an_archive_boundary() -> None:
+    result, _ = classify(
+        {
+            "kind": "archive",
+            "content": "",
+            "intent": "organize_current_question",
+            "confidence": 0.98,
+        },
+        "整理一下这道题吧",
+    )
+
+    assert result.kind is MessageKind.QUESTION
+    assert result.body_text == "整理一下这道题吧"
+    assert result.intent == "study_summary_request"
 
 
 def test_explicit_finish_with_summary_request_remains_archive() -> None:
