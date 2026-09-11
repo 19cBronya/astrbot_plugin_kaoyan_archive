@@ -59,7 +59,7 @@ def test_question_is_classified_by_llm() -> None:
     assert result.body_text == "为什么进程切换比线程切换慢？"
     assert result.provider_id == "classifier-provider"
     assert result.model_id == "classifier-model"
-    assert result.prompt_version.startswith("message-classifier-v5:")
+    assert result.prompt_version.startswith("message-classifier-v6:")
     assert len(context.calls) == 1
     assert context.calls[0]["system_prompt"] == CLASSIFIER_SYSTEM_PROMPT
 
@@ -125,6 +125,57 @@ def test_explicit_finish_with_summary_request_remains_archive() -> None:
     )
 
     assert result.kind is MessageKind.ARCHIVE
+
+
+def test_explicit_finish_overrides_wrong_question_classification() -> None:
+    result, _ = classify(
+        {
+            "kind": "question",
+            "content": "ok我问完了整理一下吧",
+            "intent": "study_summary_request",
+            "confidence": 0.91,
+        },
+        "ok我问完了整理一下吧",
+    )
+
+    assert result.kind is MessageKind.ARCHIVE
+    assert result.body_text == ""
+    assert result.intent == "explicit_finish_boundary"
+    assert "explicit finish semantics" in result.warning
+
+
+def test_negated_question_and_hypothetical_finish_phrases_do_not_force_archive() -> None:
+    for text in (
+        "我还没问完，继续讲",
+        "我问完了吗？",
+        "如果我说我问完了，你会怎么处理？",
+    ):
+        result, _ = classify(
+            {
+                "kind": "question",
+                "content": text,
+                "intent": "continue_question",
+                "confidence": 0.99,
+            },
+            text,
+        )
+        assert result.kind is MessageKind.QUESTION
+
+
+def test_negated_finish_with_organize_request_corrects_false_archive() -> None:
+    text = "我还没问完，先整理一下这道题目前的思路"
+    result, _ = classify(
+        {
+            "kind": "archive",
+            "content": "",
+            "intent": "finish_and_archive",
+            "confidence": 0.92,
+        },
+        text,
+    )
+
+    assert result.kind is MessageKind.QUESTION
+    assert result.body_text == text
 
 
 def test_soft_instruction_is_excluded_from_question_body() -> None:

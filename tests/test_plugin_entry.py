@@ -883,7 +883,7 @@ def test_soft_archive_and_ok_use_the_same_finalize_pipeline(
             confidence=1,
             provider_id="classifier",
             model_id="model",
-            prompt_version="classifier-v5:test",
+            prompt_version="classifier-v6:test",
         )
 
     plugin.classifier.classify = classify
