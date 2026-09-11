@@ -59,7 +59,7 @@ def test_question_is_classified_by_llm() -> None:
     assert result.body_text == "为什么进程切换比线程切换慢？"
     assert result.provider_id == "classifier-provider"
     assert result.model_id == "classifier-model"
-    assert result.prompt_version.startswith("message-classifier-v2:")
+    assert result.prompt_version.startswith("message-classifier-v3:")
     assert len(context.calls) == 1
     assert context.calls[0]["system_prompt"] == CLASSIFIER_SYSTEM_PROMPT
 
@@ -76,6 +76,39 @@ def test_archive_can_keep_substantive_content() -> None:
     )
     assert result.kind is MessageKind.ARCHIVE
     assert result.body_text == "最后补充：这里的复杂度是 O(n)。"
+
+
+def test_study_summary_request_is_not_accepted_as_archive_boundary() -> None:
+    result, _ = classify(
+        {
+            "kind": "archive",
+            "content": "",
+            "intent": "summarize_current_question",
+            "confidence": 0.97,
+        },
+        "帮我总结本题题干、思路，以及总结题目类型和同类方法",
+        has_attachment=True,
+    )
+
+    assert result.kind is MessageKind.QUESTION
+    assert result.body_text == "帮我总结本题题干、思路，以及总结题目类型和同类方法"
+    assert result.intent == "study_summary_request"
+    assert "corrected" in result.warning
+
+
+def test_explicit_finish_with_summary_request_remains_archive() -> None:
+    result, _ = classify(
+        {
+            "kind": "archive",
+            "content": "",
+            "intent": "finish_and_archive",
+            "confidence": 0.99,
+        },
+        "我问完了，帮我总结本题题干和思路并整理入库",
+        has_attachment=True,
+    )
+
+    assert result.kind is MessageKind.ARCHIVE
 
 
 def test_soft_instruction_is_excluded_from_question_body() -> None:

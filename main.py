@@ -25,7 +25,7 @@ from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.12.0"
+PLUGIN_VERSION = "0.12.1"
 INLINE_IMAGE_MIME_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"}
 )
@@ -109,7 +109,7 @@ class KaoyanArchivePlugin(Star):
             analysis = await self.classifier.classify(
                 umo=event.unified_msg_origin,
                 text=event.message_str or "",
-                has_attachment=bool(event.get_messages()),
+                has_attachment=self._has_archivable_attachment(event),
             )
             if analysis.warning:
                 logger.warning(
@@ -133,12 +133,12 @@ class KaoyanArchivePlugin(Star):
         )
 
         if analysis.kind is MessageKind.ARCHIVE:
-            question = await self.store.create_question_interval(
+            await self._finalize_current_interval(
                 umo=event.unified_msg_origin,
-                boundary_event_id=event_id,
+                event_id=event_id,
+                boundary_rule=analysis.matched_rule or "soft-archive",
+                notify=True,
             )
-            if question and question["status"] == "FINALIZING":
-                self._schedule_archive(question["uuid"], notify=True)
         elif analysis.kind is MessageKind.CANCEL:
             boundary_event_id = await self.store.mark_boundary(
                 event_id,
@@ -280,6 +280,14 @@ class KaoyanArchivePlugin(Star):
             return
         yield event.plain_result(self._question_notice(question))
 
+    @staticmethod
+    def _has_archivable_attachment(event: AstrMessageEvent) -> bool:
+        """Ignore Plain/At/etc. components when telling the classifier about files."""
+        return any(
+            isinstance(component, (Image, File, Record, Video))
+            for component in event.get_messages()
+        )
+
     async def _persist_user_event(
         self,
         event: AstrMessageEvent,
@@ -362,21 +370,40 @@ class KaoyanArchivePlugin(Star):
         boundary_rule: str,
     ) -> str:
         event_id = await self._ensure_framework_command_event(event, command_name)
+        question = await self._finalize_current_interval(
+            umo=event.unified_msg_origin,
+            event_id=int(event_id),
+            boundary_rule=boundary_rule,
+            notify=True,
+        )
+        if not question or question["status"] == "EMPTY":
+            return "当前区间没有可归档的题目内容。"
+        return "已提交归档任务。"
+
+    async def _finalize_current_interval(
+        self,
+        *,
+        umo: str,
+        event_id: int,
+        boundary_rule: str,
+        notify: bool,
+    ) -> dict[str, Any] | None:
+        """Use one boundary-to-archive pipeline for soft and framework commands."""
         boundary_event_id = await self.store.mark_boundary(
             int(event_id), boundary_rule
         )
         question = await self.store.create_question_interval(
-            umo=event.unified_msg_origin,
+            umo=umo,
             boundary_event_id=boundary_event_id,
         )
-        if not question or question["status"] == "EMPTY":
-            return "当前区间没有可归档的题目内容。"
-        self._schedule_archive(question["uuid"], notify=True)
-        return "已提交归档任务。"
+        if question and question["status"] == "FINALIZING":
+            self._schedule_archive(question["uuid"], notify=notify)
+        return question
 
     async def _recover_pending_jobs(self) -> None:
         await self.store.recover_classification_jobs()
         question_ids = set(await self.store.recover_pending_jobs())
+        question_ids.update(await self.store.recover_empty_attachment_boundaries())
         question_ids.update(await self.store.reconcile_late_answers())
         for question_uuid in sorted(question_ids):
             self._schedule_archive(question_uuid, notify=False)
@@ -512,12 +539,12 @@ class KaoyanArchivePlugin(Star):
         for question_uuid in affected:
             self._schedule_archive(question_uuid, notify=False)
         if result.kind is MessageKind.ARCHIVE and not affected:
-            question = await self.store.create_question_interval(
+            await self._finalize_current_interval(
                 umo=str(item["umo"]),
-                boundary_event_id=int(item["id"]),
+                event_id=int(item["id"]),
+                boundary_rule=result.matched_rule or "classification-repair-archive",
+                notify=False,
             )
-            if question and question["status"] == "FINALIZING":
-                self._schedule_archive(question["uuid"], notify=False)
         elif result.kind is MessageKind.CANCEL:
             boundary_event_id = await self.store.mark_boundary(
                 int(item["id"]),

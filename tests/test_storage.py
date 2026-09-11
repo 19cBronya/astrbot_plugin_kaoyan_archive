@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from kaoyan_archive.attachments import CapturedAttachment
 from kaoyan_archive.storage import ArchiveStore
 
 
@@ -84,6 +85,135 @@ def test_interval_excludes_commands_and_boundary(tmp_path: Path) -> None:
         (assistant_id, "answer"),
         (command_id, "excluded"),
         (boundary_id, "boundary"),
+    ]
+
+
+def test_archive_boundary_attachment_is_effective_question_content(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    umo = "default:FriendMessage:boundary-image"
+    boundary_id = asyncio.run(
+        store.add_event(
+            umo=umo,
+            direction="user",
+            platform_message_id="boundary-image",
+            parent_event_id=None,
+            sender_id="u",
+            sender_name="u",
+            kind="archive",
+            text="我问完了",
+            body_text="",
+            components=[],
+            raw={},
+            is_command=False,
+            is_boundary=True,
+            boundary_rule="finish",
+            created_at=1,
+            provider_id="classifier",
+            model_id="model",
+            prompt_version="classifier",
+        )
+    )
+    asyncio.run(
+        store.link_attachment(
+            boundary_id,
+            CapturedAttachment(
+                sha256="a" * 64,
+                size=3,
+                mime_type="image/jpeg",
+                stored_path="attachments/aa/aa/image.jpg",
+                original_name="image.jpg",
+                component_type="Image",
+            ),
+        )
+    )
+
+    question = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=boundary_id)
+    )
+    source = asyncio.run(store.question_source(question["uuid"]))
+
+    assert question["status"] == "FINALIZING"
+    assert source and [event["id"] for event in source["events"]] == [boundary_id]
+    assert source["events"][0]["attachments"][0]["name"] == "image.jpg"
+
+
+def test_upgrade_recovers_old_empty_attachment_boundary_and_late_answer(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    umo = "default:FriendMessage:recover-boundary-image"
+    boundary_id = asyncio.run(
+        store.add_event(
+            umo=umo,
+            direction="user",
+            platform_message_id="old-boundary-image",
+            parent_event_id=None,
+            sender_id="u",
+            sender_name="u",
+            kind="archive",
+            text="帮我总结本题题干和思路",
+            body_text="",
+            components=[],
+            raw={},
+            is_command=False,
+            is_boundary=True,
+            boundary_rule="summarize_current_question",
+            created_at=1,
+            provider_id="classifier",
+            model_id="model",
+            prompt_version="classifier-v2",
+        )
+    )
+    question = asyncio.run(
+        store.create_question_interval(umo=umo, boundary_event_id=boundary_id)
+    )
+    assert question and question["status"] == "EMPTY"
+    asyncio.run(
+        store.link_attachment(
+            boundary_id,
+            CapturedAttachment(
+                sha256="b" * 64,
+                size=3,
+                mime_type="image/jpeg",
+                stored_path="attachments/bb/bb/image.jpg",
+                original_name="image.jpg",
+                component_type="Image",
+            ),
+        )
+    )
+    answer_id = asyncio.run(
+        store.add_event(
+            umo=umo,
+            direction="assistant",
+            platform_message_id="late-answer",
+            parent_event_id=boundary_id,
+            sender_id="bot",
+            sender_name="bot",
+            kind="assistant",
+            text="这是图片对应的讲解。",
+            body_text="",
+            components=[],
+            raw={},
+            is_command=False,
+            is_boundary=True,
+            boundary_rule="summarize_current_question",
+            created_at=2,
+            provider_id="umo",
+            model_id="model",
+            prompt_version="runtime",
+        )
+    )
+
+    recovered = asyncio.run(store.recover_empty_attachment_boundaries())
+    source = asyncio.run(store.question_source(question["uuid"]))
+
+    assert recovered == [question["uuid"]]
+    assert source and source["status"] == "FINALIZING"
+    assert [event["id"] for event in source["events"]] == [
+        boundary_id,
+        answer_id,
     ]
 
 

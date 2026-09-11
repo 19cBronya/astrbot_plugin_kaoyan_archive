@@ -1637,8 +1637,10 @@ class ArchiveStore:
                     include = not row["already_archived"] and kind == "question" and (
                         body_text.strip() or row["has_attachment"]
                     )
-                    # An archive boundary may contain a final verbatim supplement.
-                    if kind == "archive" and body_text.strip():
+                    # An archive boundary may itself carry a final text/image supplement.
+                    if kind == "archive" and (
+                        body_text.strip() or row["has_attachment"]
+                    ):
                         include = True
                 elif row["direction"] == "assistant":
                     parent_id = int(row["parent_event_id"] or 0)
@@ -2133,6 +2135,115 @@ class ArchiveStore:
 
     async def recover_pending_jobs(self) -> list[str]:
         return self._recover_pending_jobs_sync()
+
+    async def recover_empty_attachment_boundaries(self) -> list[str]:
+        """Repair old EMPTY intervals whose soft boundary carried a real attachment."""
+        return self._recover_empty_attachment_boundaries_sync()
+
+    def _recover_empty_attachment_boundaries_sync(self) -> list[str]:
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            candidates = db.execute(
+                """
+                SELECT q.uuid,q.boundary_event_id
+                FROM questions q
+                JOIN events boundary ON boundary.id=q.boundary_event_id
+                WHERE q.status='EMPTY'
+                  AND q.is_manual=0
+                  AND boundary.direction='user'
+                  AND boundary.kind='archive'
+                  AND EXISTS(
+                      SELECT 1 FROM event_attachments ea
+                      WHERE ea.event_id=boundary.id
+                  )
+                ORDER BY q.boundary_event_id
+                """
+            ).fetchall()
+            recovered: list[str] = []
+            now = utc_timestamp()
+            for candidate in candidates:
+                question_uuid = str(candidate["uuid"])
+                boundary_event_id = int(candidate["boundary_event_id"])
+                next_ordinal = int(
+                    db.execute(
+                        """
+                        SELECT COALESCE(MAX(ordinal), -1) + 1 AS value
+                        FROM question_events WHERE question_uuid=?
+                        """,
+                        (question_uuid,),
+                    ).fetchone()["value"]
+                )
+                db.execute(
+                    """
+                    INSERT OR IGNORE INTO question_events(
+                        question_uuid,event_id,relation,ordinal
+                    ) VALUES(?,?, 'primary', ?)
+                    """,
+                    (question_uuid, boundary_event_id, next_ordinal),
+                )
+                next_ordinal += 1
+                children = db.execute(
+                    """
+                    SELECT id FROM events
+                    WHERE parent_event_id=? AND direction='assistant'
+                    ORDER BY id
+                    """,
+                    (boundary_event_id,),
+                ).fetchall()
+                for child in children:
+                    db.execute(
+                        """
+                        INSERT OR IGNORE INTO question_events(
+                            question_uuid,event_id,relation,ordinal
+                        ) VALUES(?,?, 'answer', ?)
+                        """,
+                        (question_uuid, int(child["id"]), next_ordinal),
+                    )
+                    next_ordinal += 1
+                event_count = int(
+                    db.execute(
+                        """
+                        SELECT COUNT(*) AS value FROM question_events
+                        WHERE question_uuid=?
+                          AND relation IN ('primary','supplement','answer')
+                        """,
+                        (question_uuid,),
+                    ).fetchone()["value"]
+                )
+                if event_count == 0:
+                    continue
+                db.execute(
+                    """
+                    UPDATE questions
+                    SET status='FINALIZING',event_count=?,archived_at=NULL,error=''
+                    WHERE uuid=?
+                    """,
+                    (event_count, question_uuid),
+                )
+                db.execute(
+                    """
+                    INSERT INTO archive_jobs(
+                        question_uuid,status,attempts,rerun_requested,error,
+                        created_at,updated_at
+                    ) VALUES(?, 'PENDING', 0, 0, '', ?, ?)
+                    ON CONFLICT(question_uuid) DO UPDATE SET
+                        status='PENDING',rerun_requested=0,error='',updated_at=excluded.updated_at
+                    """,
+                    (question_uuid, now, now),
+                )
+                self._audit(
+                    db,
+                    "recover_attachment_boundary",
+                    "question",
+                    question_uuid,
+                    {
+                        "boundary_event_id": boundary_event_id,
+                        "event_count": event_count,
+                    },
+                )
+                recovered.append(question_uuid)
+            db.commit()
+            return recovered
 
     def _recover_pending_jobs_sync(self) -> list[str]:
         with self._lock, self._connect() as db:

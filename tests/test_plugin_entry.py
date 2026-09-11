@@ -864,6 +864,79 @@ def test_registered_ok_command_creates_archive_boundary_without_classifier(
     assert scheduled == [(questions[0]["uuid"], True)]
 
 
+def test_soft_archive_and_ok_use_the_same_finalize_pipeline(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    umo = "default:FriendMessage:10001"
+    plugin = module.KaoyanArchivePlugin(
+        _FakeContext(),
+        _Config(enabled=True, umo_whitelist=[umo]),
+    )
+    asyncio.run(plugin.initialize())
+
+    async def classify(**_kwargs):
+        return module.AnalysisResult(
+            kind=module.MessageKind.ARCHIVE,
+            body_text="",
+            intent="finish_and_archive",
+            confidence=1,
+            provider_id="classifier",
+            model_id="model",
+            prompt_version="classifier-v3:test",
+        )
+
+    plugin.classifier.classify = classify
+    calls = []
+
+    async def finalize(**kwargs):
+        calls.append(kwargs)
+        return {"status": "EMPTY"}
+
+    plugin._finalize_current_interval = finalize
+    soft_extras = {}
+    soft_event = SimpleNamespace(
+        is_private_chat=lambda: True,
+        unified_msg_origin=umo,
+        message_str="我问完了",
+        message_obj=SimpleNamespace(
+            message_id="soft-finish",
+            timestamp=1,
+            raw_message={"message": "我问完了"},
+        ),
+        get_messages=lambda: [],
+        get_sender_id=lambda: "10001",
+        get_sender_name=lambda: "student",
+        set_extra=lambda key, value: soft_extras.__setitem__(key, value),
+    )
+    asyncio.run(plugin.capture_private_message(soft_event))
+
+    hard_extras = {}
+    hard_event = SimpleNamespace(
+        is_private_chat=lambda: True,
+        unified_msg_origin=umo,
+        message_str="ok",
+        message_obj=SimpleNamespace(
+            message_id="hard-finish",
+            timestamp=2,
+            raw_message={"message": "/ok"},
+        ),
+        get_messages=lambda: [],
+        get_sender_id=lambda: "10001",
+        get_sender_name=lambda: "student",
+        get_extra=lambda key, default=None: hard_extras.get(key, default),
+        set_extra=lambda key, value: hard_extras.__setitem__(key, value),
+    )
+    result = asyncio.run(plugin._submit_archive_command(hard_event, "ok", "/ok"))
+
+    assert result == "当前区间没有可归档的题目内容。"
+    assert [call["boundary_rule"] for call in calls] == [
+        "finish_and_archive",
+        "/ok",
+    ]
+    assert all(call["umo"] == umo and call["notify"] for call in calls)
+
+
 def test_natural_language_cancel_uses_classifier_and_marks_interval(
     monkeypatch, tmp_path: Path
 ) -> None:
