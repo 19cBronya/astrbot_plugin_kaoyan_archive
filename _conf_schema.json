@@ -58,5 +58,17 @@
     "type": "bool",
     "description": "归档完成后主动发送编号通知",
     "default": true
+  },
+  "enable_function_plots": {
+    "type": "bool",
+    "description": "允许答疑模型插入函数图并合成为单张图片",
+    "hint": "仅对白名单私聊的正常 LLM 请求追加稳定绘图协议。模型输出受限 JSON 绘图块后，插件先生成安全 SVG，再按原文位置嵌入当前 AstrBot T2I 模板；没有绘图块时不修改回复。",
+    "default": true
+  },
+  "max_function_plots": {
+    "type": "int",
+    "description": "单次回答最多渲染的函数图数量",
+    "hint": "有效范围为 1 至 6，建议保持 3，避免最终长图过高。",
+    "default": 3
   }
 }

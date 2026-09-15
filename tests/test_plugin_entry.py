@@ -29,6 +29,14 @@ class _Filter:
         return lambda function: function
 
     @staticmethod
+    def on_llm_request(*_args, **_kwargs):
+        return lambda function: function
+
+    @staticmethod
+    def on_decorating_result(*_args, **_kwargs):
+        return lambda function: function
+
+    @staticmethod
     def command_group(*_args, **_kwargs):
         def decorate(function):
             function.command = lambda *_a, **_kw: (lambda handler: handler)
@@ -44,6 +52,10 @@ class _Filter:
 class _Star:
     def __init__(self, context):
         self.context = context
+
+    async def text_to_image(self, text, return_url=True):
+        self.context.rendered_t2i = (text, return_url)
+        return "https://example.test/rendered.png"
 
 
 class _FakeContext:
@@ -102,6 +114,19 @@ class _Plain:
         self.text = text
 
 
+class _Image(_Component):
+    def __init__(self, file):
+        self.file = file
+
+    @classmethod
+    def fromURL(cls, url):
+        return cls(url)
+
+    @classmethod
+    def fromFileSystem(cls, path):
+        return cls(path)
+
+
 def _install_astrbot_api_stubs(monkeypatch, data_root: Path) -> None:
     modules = {
         "astrbot": types.ModuleType("astrbot"),
@@ -132,8 +157,9 @@ def _install_astrbot_api_stubs(monkeypatch, data_root: Path) -> None:
     modules["astrbot.api"].logger = _NoopLogger()
     modules["astrbot.api.event"].AstrMessageEvent = object
     modules["astrbot.api.event"].filter = _Filter
-    for name in ("File", "Image", "Record", "Video"):
+    for name in ("File", "Record", "Video"):
         setattr(modules["astrbot.api.message_components"], name, type(name, (_Component,), {}))
+    modules["astrbot.api.message_components"].Image = _Image
     modules["astrbot.api.star"].Context = _FakeContext
     modules["astrbot.api.star"].Star = _Star
     modules["astrbot.api.star"].register = lambda *_a, **_kw: (
@@ -219,6 +245,124 @@ def test_fallback_provider_config_uses_astrbot_multi_selector() -> None:
     assert fallback["type"] == "list"
     assert fallback["items"] == {"type": "string"}
     assert fallback["_special"] == "select_providers"
+
+
+def test_function_plot_protocol_is_only_added_for_allowed_private_umo(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    plugin = module.KaoyanArchivePlugin(
+        _FakeContext(),
+        _Config(
+            enabled=True,
+            enable_function_plots=True,
+            umo_whitelist=["default:FriendMessage:10001"],
+        ),
+    )
+    allowed = SimpleNamespace(
+        is_private_chat=lambda: True,
+        unified_msg_origin="default:FriendMessage:10001",
+    )
+    denied = SimpleNamespace(
+        is_private_chat=lambda: True,
+        unified_msg_origin="default:FriendMessage:20002",
+    )
+    allowed_request = SimpleNamespace(system_prompt="原有答疑提示词")
+    denied_request = SimpleNamespace(system_prompt="原有答疑提示词")
+
+    asyncio.run(plugin.add_function_plot_protocol(allowed, allowed_request))
+    asyncio.run(plugin.add_function_plot_protocol(allowed, allowed_request))
+    asyncio.run(plugin.add_function_plot_protocol(denied, denied_request))
+
+    assert "KAOYAN_FUNCTION_PLOT_PROTOCOL_V1" in allowed_request.system_prompt
+    assert allowed_request.system_prompt.count("KAOYAN_FUNCTION_PLOT_PROTOCOL_V1") == 1
+    assert denied_request.system_prompt == "原有答疑提示词"
+
+
+def test_function_plot_response_becomes_one_t2i_image(monkeypatch, tmp_path: Path) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    context = _FakeContext()
+    plugin = module.KaoyanArchivePlugin(
+        context,
+        _Config(
+            enabled=True,
+            enable_function_plots=True,
+            umo_whitelist=["default:FriendMessage:10001"],
+        ),
+    )
+    result = SimpleNamespace(
+        chain=[
+            _Plain(
+                "先观察图像。\n\n```kaoyan-plot\n"
+                '{"x_range":["-pi","pi"],"curves":['
+                '{"expression":"sin(x)","label":"y=sin(x)"}],'
+                '"highlights":[{"curve":0,"x_range":["pi/4","pi/2"]}]}'
+                "\n```\n\n红色部分是重点区间。"
+            )
+        ],
+        use_t2i_=None,
+    )
+    event = SimpleNamespace(
+        is_private_chat=lambda: True,
+        unified_msg_origin="default:FriendMessage:10001",
+        get_result=lambda: result,
+    )
+
+    asyncio.run(plugin.render_function_plot_response(event))
+
+    rendered_markdown, return_url = context.rendered_t2i
+    assert return_url is True
+    assert "先观察图像" in rendered_markdown
+    assert "红色部分是重点区间" in rendered_markdown
+    assert rendered_markdown.index("先观察图像") < rendered_markdown.index("<svg")
+    assert rendered_markdown.index("</svg>") < rendered_markdown.index("红色部分")
+    assert "```kaoyan-plot" not in rendered_markdown
+    assert len(result.chain) == 1
+    assert isinstance(result.chain[0], _Image)
+    assert result.chain[0].file == "https://example.test/rendered.png"
+    assert result.use_t2i_ is False
+
+
+def test_function_plot_t2i_failure_keeps_explanation_without_svg(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_plugin_module(monkeypatch, tmp_path)
+    plugin = module.KaoyanArchivePlugin(
+        _FakeContext(),
+        _Config(
+            enabled=True,
+            enable_function_plots=True,
+            umo_whitelist=["default:FriendMessage:10001"],
+        ),
+    )
+
+    async def fail_render(*_args, **_kwargs):
+        raise RuntimeError("t2i unavailable")
+
+    plugin.text_to_image = fail_render
+    result = SimpleNamespace(
+        chain=[
+            _Plain(
+                "讲解前。\n```kaoyan-plot\n"
+                '{"curves":[{"expression":"sin(x)"}]}'
+                "\n```\n讲解后。"
+            )
+        ],
+        use_t2i_=None,
+    )
+    event = SimpleNamespace(
+        is_private_chat=lambda: True,
+        unified_msg_origin="default:FriendMessage:10001",
+        get_result=lambda: result,
+    )
+
+    asyncio.run(plugin.render_function_plot_response(event))
+
+    assert len(result.chain) == 1
+    assert isinstance(result.chain[0], _Plain)
+    assert "讲解前" in result.chain[0].text and "讲解后" in result.chain[0].text
+    assert "<svg" not in result.chain[0].text
+    assert "sin(x)" not in result.chain[0].text
 
 
 def test_page_edit_endpoint_validates_and_saves_archive(monkeypatch, tmp_path: Path) -> None:

@@ -19,13 +19,20 @@ from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 from .kaoyan_archive.analyzer import AnalysisResult, MessageClassifier, MessageKind
 from .kaoyan_archive.archive_service import ArchiveResult, ArchiveService
 from .kaoyan_archive.attachments import AttachmentStore
+from .kaoyan_archive.function_plot import (
+    PLOT_PROMPT_MARKER,
+    PLOT_PROTOCOL_PROMPT,
+    contains_plot_block,
+    expand_plot_blocks,
+    plot_fallback_markdown,
+)
 from .kaoyan_archive.provider_fallback import configured_fallback_provider_ids
 from .kaoyan_archive.storage import ArchiveStore
 from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.12.6"
+PLUGIN_VERSION = "0.13.0"
 INLINE_IMAGE_MIME_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"}
 )
@@ -151,6 +158,75 @@ class KaoyanArchivePlugin(Star):
             await self.context.send_message(
                 event.unified_msg_origin,
                 MessageChain([Plain(self._cancel_result_notice(cancelled))]),
+            )
+
+    @filter.on_llm_request(priority=100)
+    async def add_function_plot_protocol(self, event: AstrMessageEvent, req) -> None:
+        """Offer a stable, declarative plotting protocol to allowed private chats."""
+        if not self._should_process(event) or not self._cfg_bool(
+            "enable_function_plots", True
+        ):
+            return
+        system_prompt = str(getattr(req, "system_prompt", "") or "")
+        if PLOT_PROMPT_MARKER in system_prompt:
+            return
+        req.system_prompt = f"{system_prompt.rstrip()}\n\n{PLOT_PROTOCOL_PROMPT}".lstrip()
+
+    @filter.on_decorating_result(priority=100)
+    async def render_function_plot_response(self, event: AstrMessageEvent) -> None:
+        """Render plot blocks in-place, then ask AstrBot T2I for one final image."""
+        if not self._should_process(event) or not self._cfg_bool(
+            "enable_function_plots", True
+        ):
+            return
+        result = event.get_result()
+        if result is None or not getattr(result, "chain", None):
+            return
+        if not all(isinstance(component, Plain) for component in result.chain):
+            return
+        markdown = "\n\n".join(component.text for component in result.chain)
+        if not contains_plot_block(markdown):
+            return
+
+        expansion = expand_plot_blocks(
+            markdown,
+            max_blocks=self._cfg_int("max_function_plots", 3),
+        )
+        if expansion.plot_count == 0:
+            result.chain = [Plain(expansion.markdown)]
+            logger.warning(
+                "函数图块均未通过校验 umo=%s errors=%s",
+                event.unified_msg_origin,
+                "；".join(expansion.errors),
+            )
+            return
+        try:
+            rendered = await self.text_to_image(expansion.markdown, return_url=True)
+            if not rendered:
+                raise RuntimeError("AstrBot T2I 未返回图片")
+            rendered_text = str(rendered)
+            if rendered_text.startswith(("http://", "https://")):
+                image_component = Image.fromURL(rendered_text)
+            else:
+                image_component = Image.fromFileSystem(rendered_text)
+            result.chain = [image_component]
+            # The core result decorator runs after this hook. An Image-only chain is
+            # already safe, while the explicit flag prevents accidental re-rendering.
+            if hasattr(result, "use_t2i_"):
+                result.use_t2i_ = False
+            logger.info(
+                "函数图与答疑已合成为单图 umo=%s plots=%d warnings=%d",
+                event.unified_msg_origin,
+                expansion.plot_count,
+                len(expansion.errors),
+            )
+        except Exception as exc:
+            # Never lose the answer because the optional renderer is unavailable.
+            result.chain = [Plain(plot_fallback_markdown(markdown))]
+            logger.warning(
+                "函数图最终 T2I 合成失败，回退为图文 Markdown umo=%s: %s",
+                event.unified_msg_origin,
+                exc,
             )
 
     @filter.on_agent_done(priority=-100)
