@@ -258,6 +258,7 @@ function renderTimelineEvent(event) {
 function renderDetailActions(detail) {
   const actions = $("detail-actions");
   actions.replaceChildren();
+  actions.append(actionButton("导出 PDF", "secondary", exportActiveQuestionPdf));
   if (detail.status === "ARCHIVED" && !detail.deleted_at) {
     actions.append(actionButton("编辑归档", "secondary", beginEdit));
     actions.append(actionButton("重新归档", "primary", () => actOnQuestion("rearchive")));
@@ -270,6 +271,217 @@ function renderDetailActions(detail) {
   } else {
     actions.append(actionButton("软删除", "danger", () => actOnQuestion("delete")));
   }
+}
+
+async function exportActiveQuestionPdf() {
+  if (!state.active) return;
+  const buttons = [...$("detail-actions").querySelectorAll("button")];
+  buttons.forEach((button) => { button.disabled = true; });
+  try {
+    toast("正在准备 A4 归档，请稍候…");
+    const root = await buildPdfExport(state.active);
+    renderMath(root);
+    await waitForPdfAssets(root);
+    if (typeof window.html2pdf !== "function") throw new Error("PDF 组件未加载");
+    root.classList.add("pdf-export-ready");
+    root.setAttribute("aria-hidden", "false");
+    await window.html2pdf().set({
+      margin: [12, 10, 14, 10],
+      filename: `${pdfFileName(state.active)}.pdf`,
+      image: { type: "jpeg", quality: 0.96 },
+      html2canvas: {
+        scale: 2,
+        useCORS: false,
+        allowTaint: false,
+        backgroundColor: "#ffffff",
+        logging: false,
+      },
+      jsPDF: { unit: "mm", format: "a4", orientation: "portrait", compress: true },
+      pagebreak: {
+        mode: ["css", "legacy"],
+        avoid: [".pdf-header", ".pdf-event-head", ".pdf-attachment", ".math-block", ".katex-display"],
+      },
+    }).from(root).save();
+    toast("PDF 已生成并开始下载");
+  } catch (error) {
+    toast(error.message || "PDF 导出失败", true);
+  } finally {
+    const root = $("pdf-export");
+    root.classList.remove("pdf-export-ready");
+    root.setAttribute("aria-hidden", "true");
+    buttons.forEach((button) => { button.disabled = false; });
+  }
+}
+
+async function buildPdfExport(detail) {
+  const root = $("pdf-export");
+  root.replaceChildren();
+
+  const header = document.createElement("header");
+  header.className = "pdf-header";
+  const brand = document.createElement("p");
+  brand.className = "pdf-brand";
+  brand.textContent = "ASTRBOT · 考研答疑归档";
+  const identity = document.createElement("p");
+  identity.className = "pdf-question-id";
+  identity.textContent = detail.public_id || detail.uuid;
+  const title = document.createElement("h1");
+  title.textContent = detail.title || "未命名题目";
+  const meta = document.createElement("div");
+  meta.className = "pdf-meta";
+  for (const value of [
+    detail.subject || "待分类",
+    statusLabel(detail.status),
+    dateTime(detail.archived_at || detail.created_at),
+  ]) {
+    const item = document.createElement("span");
+    item.textContent = value;
+    meta.append(item);
+  }
+  header.append(brand, identity, title, meta);
+  root.append(header);
+
+  if (detail.overview) {
+    const overview = pdfSection("题目概览", "QUESTION OVERVIEW");
+    const text = document.createElement("p");
+    text.className = "pdf-overview";
+    text.textContent = inferInlineMath(detail.overview);
+    overview.append(text);
+    root.append(overview);
+  }
+
+  const points = [...new Set((detail.knowledge_points || []).filter(Boolean))];
+  if (points.length) {
+    const knowledge = pdfSection("知识点", "KNOWLEDGE POINTS");
+    const list = document.createElement("div");
+    list.className = "pdf-knowledge";
+    for (const point of points.slice(0, 20)) list.append(knowledgeChip(point));
+    knowledge.append(list);
+    root.append(knowledge);
+  }
+
+  const summary = pdfSection("题目总结", "ARCHIVE SUMMARY");
+  const summaryBody = document.createElement("div");
+  summaryBody.className = "pdf-summary";
+  appendMarkdownBlocks(summaryBody, detail.summary || detail.error || "暂无总结");
+  summary.append(summaryBody);
+  root.append(summary);
+
+  const events = detail.events || [];
+  const excluded = events.filter((event) => relationParts(event.relation).includes("excluded"));
+  const visible = events.filter((event) => !relationParts(event.relation).includes("excluded"));
+  const conversation = pdfSection("原始会话", "RAW CONVERSATION");
+  const conversationMeta = document.createElement("p");
+  conversationMeta.className = "pdf-section-note";
+  conversationMeta.textContent = excluded.length
+    ? `收录 ${visible.length} 条有效事件；${excluded.length} 条已排除审计消息未写入 PDF。`
+    : `收录 ${visible.length} 条有效事件。`;
+  const timeline = document.createElement("div");
+  timeline.className = "pdf-timeline";
+  for (const event of visible) {
+    timeline.append(await renderPdfTimelineEvent(event));
+  }
+  conversation.append(conversationMeta, timeline);
+  root.append(conversation);
+
+  const footer = document.createElement("footer");
+  footer.className = "pdf-footer";
+  footer.textContent = `由考研答疑归档插件生成 · ${new Intl.DateTimeFormat("zh-CN", {
+    dateStyle: "long",
+    timeStyle: "short",
+  }).format(new Date())}`;
+  root.append(footer);
+  return root;
+}
+
+function pdfSection(title, kicker) {
+  const section = document.createElement("section");
+  section.className = "pdf-section";
+  const label = document.createElement("p");
+  label.className = "pdf-kicker";
+  label.textContent = kicker;
+  const heading = document.createElement("h2");
+  heading.textContent = title;
+  section.append(label, heading);
+  return section;
+}
+
+async function renderPdfTimelineEvent(event) {
+  const item = document.createElement("article");
+  item.className = `pdf-event ${event.direction}${relationParts(event.relation).includes("boundary") ? " boundary" : ""}`;
+  const head = document.createElement("div");
+  head.className = "pdf-event-head";
+  const who = document.createElement("strong");
+  who.textContent = `${event.direction === "user" ? "用户" : event.direction === "assistant" ? "助手" : "控制"} · ${relationLabel(event.relation)}`;
+  const when = document.createElement("span");
+  when.textContent = dateTime(event.created_at);
+  head.append(who, when);
+  const body = document.createElement("div");
+  body.className = "pdf-event-body";
+  appendMarkdownBlocks(
+    body,
+    event.text || (event.attachments?.length ? "[附件消息]" : ""),
+  );
+  item.append(head, body);
+  for (const attachment of event.attachments || []) {
+    item.append(await renderPdfAttachment(attachment));
+  }
+  return item;
+}
+
+async function renderPdfAttachment(attachment) {
+  const mimeType = String(attachment.mime_type || "").toLowerCase();
+  const label = `${attachment.name || "附件"} · ${Math.ceil((attachment.size || 0) / 1024)} KiB`;
+  if (!previewableImageTypes.has(mimeType) || !attachment.sha256) {
+    const note = document.createElement("p");
+    note.className = "pdf-attachment-note";
+    note.textContent = `附件：${label}`;
+    return note;
+  }
+  const figure = document.createElement("figure");
+  figure.className = "pdf-attachment";
+  try {
+    const image = document.createElement("img");
+    image.alt = attachment.name || "题目图片";
+    image.src = await loadImagePreview(attachment.sha256);
+    const caption = document.createElement("figcaption");
+    caption.textContent = label;
+    figure.append(image, caption);
+  } catch (error) {
+    const note = document.createElement("p");
+    note.className = "pdf-attachment-note error";
+    note.textContent = `图片载入失败，已保留附件记录：${label}`;
+    figure.append(note);
+  }
+  return figure;
+}
+
+async function waitForPdfAssets(root) {
+  const images = [...root.querySelectorAll("img")];
+  await Promise.all(images.map(async (image) => {
+    if (image.complete) return;
+    if (typeof image.decode === "function") {
+      try {
+        await image.decode();
+        return;
+      } catch (_error) {
+        // Fall through to load/error events for browsers with partial decode support.
+      }
+    }
+    await new Promise((resolve) => {
+      image.addEventListener("load", resolve, { once: true });
+      image.addEventListener("error", resolve, { once: true });
+    });
+  }));
+  if (document.fonts?.ready) await document.fonts.ready;
+  await new Promise((resolve) => window.requestAnimationFrame(
+    () => window.requestAnimationFrame(resolve),
+  ));
+}
+
+function pdfFileName(detail) {
+  const raw = `${detail.public_id || "考研题目"}-${detail.title || "归档"}`;
+  return raw.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-").replace(/\s+/g, " ").slice(0, 120);
 }
 
 function beginEdit() {

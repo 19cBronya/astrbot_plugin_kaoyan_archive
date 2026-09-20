@@ -11,6 +11,7 @@ import pytest
 ROOT = Path(__file__).parents[1]
 PAGE = ROOT / "pages" / "archive"
 KATEX = PAGE / "vendor" / "katex"
+HTML2PDF = PAGE / "vendor" / "html2pdf"
 
 
 def test_katex_is_loaded_only_from_local_page_assets() -> None:
@@ -90,6 +91,46 @@ def test_timeline_uses_structured_markdown_without_preserved_blank_lines() -> No
     assert "body.textContent = event.text" not in script
     assert ".event-body .math-block { margin: 0.75em 0;" in stylesheet
     assert ".event-body { margin: 0; white-space: pre-wrap;" not in stylesheet
+
+
+def test_question_detail_can_export_an_a4_pdf_archive() -> None:
+    document = (PAGE / "index.html").read_text(encoding="utf-8")
+    script = (PAGE / "app.js").read_text(encoding="utf-8")
+    stylesheet = (PAGE / "style.css").read_text(encoding="utf-8")
+
+    assert 'id="pdf-export"' in document
+    assert 'actionButton("导出 PDF", "secondary", exportActiveQuestionPdf)' in script
+    assert "async function buildPdfExport(detail)" in script
+    assert "await loadImagePreview(attachment.sha256)" in script
+    assert "renderMath(root)" in script
+    assert "await waitForPdfAssets(root)" in script
+    assert "vendor/html2pdf/html2pdf.bundle.min.js" in document
+    assert 'typeof window.html2pdf !== "function"' in script
+    assert "await window.html2pdf().set({" in script
+    assert 'filename: `${pdfFileName(state.active)}.pdf`' in script
+    assert 'format: "a4"' in script
+    assert "window.print()" not in script
+    assert ".pdf-export.pdf-export-ready" in stylesheet
+    assert ".html2pdf__container .pdf-export.pdf-export-ready" in stylesheet
+    assert (HTML2PDF / "html2pdf.bundle.min.js").is_file()
+    assert (HTML2PDF / "LICENSE").is_file()
+    assert "html2pdf.js v0.14.0" in (
+        HTML2PDF / "html2pdf.bundle.min.js.LICENSE.txt"
+    ).read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
+def test_vendored_html2pdf_bundle_loads_as_a_function() -> None:
+    script = (
+        "global.self=global;"
+        "const html2pdf=require(process.argv[1]);"
+        "if(typeof html2pdf!=='function')process.exit(2);"
+    )
+    subprocess.run(
+        ["node", "-e", script, str(HTML2PDF / "html2pdf.bundle.min.js")],
+        check=True,
+        cwd=ROOT,
+    )
 
 
 def test_all_katex_fonts_referenced_by_css_are_vendored() -> None:
