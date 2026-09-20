@@ -36,7 +36,11 @@ class FallbackLLMContext:
                 {
                     "subject": "操作系统",
                     "title": "备用模型整理成功",
-                    "overview": "概括进程状态与线程调度的核心区别。",
+                    "overview": {
+                        "problem": "比较操作系统中进程和线程的区别。",
+                        "approach": "从资源分配和处理器调度两个维度对比。",
+                        "focus": "进程是资源分配单位，线程是调度单位",
+                    },
                     "knowledge_points": ["进程状态", "线程调度"],
                     "summary": "## 备用整理结果",
                 },
@@ -112,8 +116,12 @@ async def build_question(store: ArchiveStore) -> str:
 
 
 def test_archive_prompt_preserves_renderable_formula_delimiters() -> None:
-    assert ARCHIVE_PROMPT_VERSION == "archive-v5"
+    assert ARCHIVE_PROMPT_VERSION == "archive-v6"
     assert "overview" in ARCHIVE_SYSTEM_PROMPT
+    assert '"problem"' in ARCHIVE_SYSTEM_PROMPT
+    assert '"approach"' in ARCHIVE_SYSTEM_PROMPT
+    assert '"focus"' in ARCHIVE_SYSTEM_PROMPT
+    assert "不得省略、合并" in ARCHIVE_SYSTEM_PROMPT
     assert "$...$" in ARCHIVE_SYSTEM_PROMPT
     assert "$$...$$" in ARCHIVE_SYSTEM_PROMPT
     assert "完整保留" in ARCHIVE_SYSTEM_PROMPT
@@ -141,7 +149,9 @@ def test_local_archive_assigns_subject_and_id(tmp_path: Path) -> None:
     assert result.public_id == "操作系统0001"
     assert result.subject == "操作系统"
     assert "进程和线程" in result.title
-    assert "题目主要讨论" in result.overview
+    assert result.overview.startswith("原题：")
+    assert "；思路：" in result.overview
+    assert "；重点：" in result.overview
     assert "资源分配单位" in result.summary
 
 
@@ -170,7 +180,11 @@ def test_archive_uses_backup_before_umo_provider(tmp_path: Path) -> None:
     result, detail, context = asyncio.run(scenario())
 
     assert result.title == "备用模型整理成功"
-    assert result.overview == "概括进程状态与线程调度的核心区别。"
+    assert result.overview == (
+        "原题：比较操作系统中进程和线程的区别。；"
+        "思路：从资源分配和处理器调度两个维度对比。；"
+        "重点：进程是资源分配单位，线程是调度单位"
+    )
     assert detail["overview"] == result.overview
     assert detail["provider_id"] == "backup-provider"
     assert detail["model_id"] == "backup-model"
@@ -181,6 +195,60 @@ def test_archive_uses_backup_before_umo_provider(tmp_path: Path) -> None:
         "backup-provider",
     ]
     assert context.provider_lookups == 0
+
+
+def test_archive_overview_fills_missing_sections_from_local_transcript() -> None:
+    service = ArchiveService(
+        context=NoLLMContext(),
+        config={},
+        store=None,  # type: ignore[arg-type]
+        plugin_version="test",
+    )
+    transcript = (
+        "用户：求函数 $f(x)=x^2$ 在 $x=1$ 处的导数。\n\n"
+        "助手：使用导数定义或幂函数求导公式计算，并代入 $x=1$。"
+    )
+    archive = service._validate_archive(
+        {
+            "subject": "数学",
+            "title": "幂函数求导",
+            "overview": {"approach": "先求导，再代入指定点。"},
+            "knowledge_points": ["导数"],
+            "summary": "## 解答",
+        },
+        ["数学", "其他"],
+        transcript,
+    )
+
+    assert archive["overview"].startswith("原题：求函数 $f(x)=x^2$ 在 $x=1$ 处的导数。；")
+    assert "；思路：先求导，再代入指定点。；" in archive["overview"]
+    assert archive["overview"].endswith("重点：导数")
+
+
+def test_legacy_single_sentence_overview_is_kept_as_approach_and_completed() -> None:
+    service = ArchiveService(
+        context=NoLLMContext(),
+        config={},
+        store=None,  # type: ignore[arg-type]
+        plugin_version="test",
+    )
+    archive = service._validate_archive(
+        {
+            "subject": "操作系统",
+            "title": "进程与线程",
+            "overview": "从资源分配与调度两个角度比较。",
+            "knowledge_points": ["进程", "线程"],
+            "summary": "## 解答",
+        },
+        ["操作系统", "其他"],
+        "用户：进程和线程有什么区别？\n\n助手：进程分配资源，线程参与调度。",
+    )
+
+    assert archive["overview"] == (
+        "原题：进程和线程有什么区别？；"
+        "思路：从资源分配与调度两个角度比较。；"
+        "重点：进程、线程"
+    )
 
 
 def test_archive_uses_local_rules_when_all_providers_fail(tmp_path: Path) -> None:

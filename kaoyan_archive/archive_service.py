@@ -14,16 +14,25 @@ from .provider_fallback import (
 from .storage import ArchiveStore
 
 
-ARCHIVE_PROMPT_VERSION = "archive-v5"
+ARCHIVE_PROMPT_VERSION = "archive-v6"
+OVERVIEW_MAX_CHARS = 600
+OVERVIEW_PROBLEM_MAX_CHARS = 220
+OVERVIEW_APPROACH_MAX_CHARS = 220
+OVERVIEW_FOCUS_MAX_CHARS = 120
 ARCHIVE_SYSTEM_PROMPT = r"""你是考研答疑归档器，只整理给定对话，不继续答题。
 返回严格 JSON 对象，字段为 subject、title、overview、knowledge_points、summary：
 - subject 必须从允许科目中选择；
 - title 用一句简洁中文概括题目；
-- overview 使用 1 至 2 句中文概括问题目标、核心结论或解题方向，适合直接显示在题目列表中，不使用标题或列表，不超过 160 字；其中每个公式片段必须用 $...$ 包围；
+- overview 必须是 JSON 对象而不是字符串，并且必须同时包含 problem、approach、focus 三个非空字符串；不得省略、合并或用同一句话重复填充这三项：
+  - problem：忠实复述题目原题的关键已知条件和所求内容，不写解答结论，不超过 220 字；
+  - approach：概括大致解题思路，说明采用的方法、关键步骤或公式之间的关系，不展开冗长推导，不超过 220 字；
+  - focus：提炼本题最应关注的条件、公式、易错点或结论，使用简洁短语，不超过 120 字；
+  - 三项中的每个公式片段都必须用 $...$ 包围；即使对话信息不足，也要依据已有原文分别填写，不能只返回其中一部分；
 - knowledge_points 是 1 至 8 个简洁的中文知识点字符串组成的数组；其中出现公式时必须用 $...$ 包围；
 - summary 使用 Markdown，依次整理题目、关键追问、解答结论和仍未解决点；
 - 完整保留有意义的数学公式，所有字段的行内公式使用 $...$，summary 中的独立公式使用 $$...$$；
-- 不得编造对话中没有的信息，不输出 JSON 之外的解释。"""
+- 不得编造对话中没有的信息，不输出 JSON 之外的解释。
+overview 的格式示例：{"problem":"已知……，求……","approach":"先……，再……，最后……","focus":"适用条件、关键公式、易错符号"}。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,7 +183,11 @@ class ArchiveService:
         local = self._local_archive(transcript, subjects)
         subject = str(value.get("subject") or "").strip()
         title = str(value.get("title") or "").strip()
-        overview = re.sub(r"\s+", " ", str(value.get("overview") or "")).strip()
+        overview = self._normalized_overview(
+            value.get("overview"),
+            transcript=transcript,
+            local_overview=local["overview"],
+        )
         summary = str(value.get("summary") or "").strip()
         raw_points = value.get("knowledge_points")
         knowledge_points = (
@@ -185,7 +198,7 @@ class ArchiveService:
         return {
             "subject": subject if subject in subjects else local["subject"],
             "title": title[:200] or local["title"],
-            "overview": overview[:300] or local["overview"],
+            "overview": overview,
             "summary": summary or local["summary"],
             "knowledge_points": knowledge_points or local["knowledge_points"],
         }
@@ -214,35 +227,117 @@ class ArchiveService:
                     if keyword in lowered and keyword not in {candidate.lower(), "408"}
                 ][:8]
                 break
-        first_user = next(
-            (
-                line.removeprefix("用户：").strip()
-                for line in transcript.splitlines()
-                if line.startswith("用户：") and line.removeprefix("用户：").strip()
-            ),
-            "未命名题目",
-        )
+        messages = ArchiveService._transcript_messages(transcript)
+        user_messages = [body for role, body in messages if role == "用户" and body]
+        assistant_messages = [
+            body for role, body in messages if role == "助手" and body
+        ]
+        first_user = user_messages[0] if user_messages else "未命名题目"
         title = re.sub(r"\s+", " ", first_user)[:60]
-        first_answer = next(
-            (
-                line.removeprefix("助手：").strip()
-                for line in transcript.splitlines()
-                if line.startswith("助手：") and line.removeprefix("助手：").strip()
-            ),
-            "",
+        problem = ArchiveService._clean_overview_part(
+            "；".join(user_messages) or first_user,
+            OVERVIEW_PROBLEM_MAX_CHARS,
         )
-        overview = f"题目主要讨论：{title}。"
-        if first_answer:
-            compact_answer = re.sub(r"\s+", " ", first_answer)[:140]
-            overview += f"归档解答的核心方向是：{compact_answer}"
+        approach = ArchiveService._clean_overview_part(
+            "；".join(assistant_messages)
+            or "对话中尚无完整解答，需要先核对题设条件，再选择方法并验证结论。",
+            OVERVIEW_APPROACH_MAX_CHARS,
+        )
+        meaningful_points = [point for point in knowledge_points if point != subject]
+        focus_source = "、".join(meaningful_points[:6]) or f"{subject}题设条件、关键方法与结果校验"
+        focus = ArchiveService._clean_overview_part(
+            focus_source,
+            OVERVIEW_FOCUS_MAX_CHARS,
+        )
+        overview = ArchiveService._format_overview(problem, approach, focus)
         summary = "## 对话归档\n\n" + (transcript or "（仅包含附件，暂无文本）")
         return {
             "subject": subject,
             "title": title,
-            "overview": overview[:300],
+            "overview": overview,
             "summary": summary,
             "knowledge_points": knowledge_points or [subject],
         }
+
+    @staticmethod
+    def _transcript_messages(transcript: str) -> list[tuple[str, str]]:
+        pattern = re.compile(
+            r"(?:^|\n\n)(用户|助手)：(.*?)(?=\n\n(?:用户|助手)：|\Z)",
+            re.S,
+        )
+        return [
+            (match.group(1), match.group(2).strip())
+            for match in pattern.finditer(transcript)
+            if match.group(2).strip()
+        ]
+
+    @staticmethod
+    def _clean_overview_part(value: Any, limit: int) -> str:
+        text = re.sub(r"\s+", " ", str(value or "")).strip(" ；;")
+        if len(text) <= limit:
+            return text
+        shortened = text[: limit - 1].rstrip(" ，。；;")
+        if shortened.count("$") % 2:
+            shortened = shortened[: shortened.rfind("$")].rstrip(" ，。；;")
+        return f"{shortened}…" if shortened else text[:limit]
+
+    @staticmethod
+    def _split_overview(value: Any) -> dict[str, str]:
+        if isinstance(value, dict):
+            return {
+                "problem": str(value.get("problem") or "").strip(),
+                "approach": str(value.get("approach") or "").strip(),
+                "focus": str(value.get("focus") or "").strip(),
+            }
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        if not text:
+            return {"problem": "", "approach": "", "focus": ""}
+        match = re.fullmatch(
+            r"原题\s*[:：]\s*(.*?)\s*[；;]\s*思路\s*[:：]\s*(.*?)\s*[；;]\s*重点\s*[:：]\s*(.*)",
+            text,
+        )
+        if match:
+            return {
+                "problem": match.group(1).strip(),
+                "approach": match.group(2).strip(),
+                "focus": match.group(3).strip(),
+            }
+        # 兼容 archive-v5 及不完全遵循 JSON 结构的模型：旧式单句概览通常描述解题方向。
+        return {"problem": "", "approach": text, "focus": ""}
+
+    @staticmethod
+    def _format_overview(problem: str, approach: str, focus: str) -> str:
+        return f"原题：{problem}；思路：{approach}；重点：{focus}"[:OVERVIEW_MAX_CHARS]
+
+    @classmethod
+    def _normalized_overview(
+        cls,
+        value: Any,
+        *,
+        transcript: str,
+        local_overview: str,
+    ) -> str:
+        generated = cls._split_overview(value)
+        local = cls._split_overview(local_overview)
+        problem = cls._clean_overview_part(
+            generated["problem"] or local["problem"],
+            OVERVIEW_PROBLEM_MAX_CHARS,
+        )
+        approach = cls._clean_overview_part(
+            generated["approach"] or local["approach"],
+            OVERVIEW_APPROACH_MAX_CHARS,
+        )
+        focus = cls._clean_overview_part(
+            generated["focus"] or local["focus"],
+            OVERVIEW_FOCUS_MAX_CHARS,
+        )
+        if not problem or not approach or not focus:
+            fallback = cls._local_archive(transcript, ["其他"])["overview"]
+            fallback_parts = cls._split_overview(fallback)
+            problem = problem or fallback_parts["problem"]
+            approach = approach or fallback_parts["approach"]
+            focus = focus or fallback_parts["focus"]
+        return cls._format_overview(problem, approach, focus)
 
     @staticmethod
     def _extract_model_id(response: Any, provider_id: str) -> str:

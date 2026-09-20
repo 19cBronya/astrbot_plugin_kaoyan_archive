@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.14.2
+
+- 归档 Prompt 升级至 `archive-v6`：题目概览必须分别返回原题、解题思路和重点，不再允许只生成一段笼统摘要。
+- 概览入库前会校验并补齐三部分；旧模型仍返回单句时会保留为“思路”，并从原始对话补出“原题”和“重点”。
+- 题目概览上限由 300 字提高到 600 字，编辑框同步支持三段结构，避免较完整的题设被过早截断。
+
 ## v0.14.1
 
 - 修复 AstrBot Plugin Page 在不含 `allow-same-origin` 的沙箱 iframe 中导出 PDF 时出现 `Blocked a frame with origin "null"` 的错误。
