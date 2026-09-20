@@ -14,7 +14,7 @@ from .provider_fallback import (
 from .storage import ArchiveStore
 
 
-ARCHIVE_PROMPT_VERSION = "archive-v7"
+ARCHIVE_PROMPT_VERSION = "archive-v8"
 OVERVIEW_MAX_CHARS = 300
 OVERVIEW_PROBLEM_MAX_CHARS = 80
 OVERVIEW_APPROACH_MAX_CHARS = 90
@@ -22,7 +22,7 @@ OVERVIEW_FOCUS_MAX_CHARS = 60
 ARCHIVE_SYSTEM_PROMPT = r"""你是考研答疑归档器，只整理给定对话，不继续答题。
 返回严格 JSON 对象，字段为 subject、title、overview、knowledge_points、summary：
 - subject 必须从允许科目中选择；
-- title 用一句简洁中文概括题目；
+- title 是“一句话总结”，用一句简洁中文概括题目对象、核心方法和目标，便于作为题库标题快速识别，不展开推导，不超过 60 字；
 - overview 是供题库快速浏览的简洁概览，不是题目总结；必须是 JSON 对象而不是字符串，并且必须同时包含 problem、approach、focus 三个非空字符串；不得省略、合并或用同一句话重复填充这三项，三项合计尽量控制在 200 字以内：
   - problem：用一句话忠实概括原题的关键已知条件和所求内容，不逐句照抄题目，不写解答结论，不超过 80 字；
   - approach：用一句话概括大致解题思路，只说明主要方法和关键步骤，不展开推导或罗列细节，不超过 90 字；

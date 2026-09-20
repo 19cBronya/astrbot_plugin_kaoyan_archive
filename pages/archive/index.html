@@ -28,7 +28,7 @@
           <div>
             <p class="section-kicker">QUESTION LIBRARY</p>
             <h2>全部题目</h2>
-            <p class="section-description">选择筛选条件缩小范围，点击题目查看知识点、总结和原始会话。</p>
+            <p class="section-description">选择筛选条件缩小范围，点击题目查看一句话总结、概览、题目整理和原始会话。</p>
           </div>
           <span id="result-count" class="result-count"></span>
         </div>
@@ -176,7 +176,10 @@
       <article class="detail-drawer">
         <header class="detail-header">
           <div>
-            <p id="detail-id" class="section-kicker"></p>
+            <div class="detail-title-kicker">
+              <p id="detail-id" class="section-kicker"></p>
+              <span>一句话总结</span>
+            </div>
             <h2 id="detail-title">题目详情</h2>
           </div>
           <button id="close-detail" class="icon-button" type="button" aria-label="关闭">×</button>
@@ -185,7 +188,7 @@
         <form id="edit-form" class="edit-form hidden">
           <div class="edit-grid">
             <label>
-              <span>题目标题</span>
+              <span>一句话总结</span>
               <input id="edit-title" type="text" maxlength="200" required />
             </label>
             <label>
@@ -201,7 +204,7 @@
               <textarea id="edit-knowledge" rows="5" placeholder="一行一个知识点，最多 20 个"></textarea>
             </label>
             <label>
-              <span>Markdown 总结</span>
+              <span>题目整理（Markdown）</span>
               <textarea id="edit-summary" class="summary-editor" rows="16" maxlength="200000" required></textarea>
             </label>
           </div>
@@ -219,25 +222,30 @@
             <div id="detail-knowledge" class="knowledge-list"></div>
           </section>
           <section class="detail-section">
-            <p class="section-kicker">ARCHIVE SUMMARY</p>
-            <h3>题目总结</h3>
+            <p class="section-kicker">QUESTION NOTES</p>
+            <h3>题目整理</h3>
             <div id="detail-summary" class="summary"></div>
           </section>
-          <section class="detail-section">
-            <div class="timeline-heading">
+          <details id="detail-conversation" class="detail-section detail-conversation">
+            <summary>
               <div>
                 <p class="section-kicker">RAW CONVERSATION</p>
                 <h3>原始会话</h3>
               </div>
-              <span id="detail-event-count" class="counter"></span>
+              <span class="detail-conversation-side">
+                <span id="detail-event-count" class="counter"></span>
+                <span class="detail-conversation-chevron" aria-hidden="true">›</span>
+              </span>
+            </summary>
+            <div class="detail-conversation-content">
+              <div id="detail-timeline" class="timeline"></div>
+              <details id="detail-excluded" class="excluded-events hidden">
+                <summary>已排除消息 <span id="detail-excluded-count" class="counter"></span></summary>
+                <p class="excluded-note">这些原始事件不参与题目整理，仅保留用于审计。</p>
+                <div id="detail-excluded-timeline" class="timeline"></div>
+              </details>
             </div>
-            <div id="detail-timeline" class="timeline"></div>
-            <details id="detail-excluded" class="excluded-events hidden">
-              <summary>已排除消息 <span id="detail-excluded-count" class="counter"></span></summary>
-              <p class="excluded-note">这些原始事件不参与题目整理，仅保留用于审计。</p>
-              <div id="detail-excluded-timeline" class="timeline"></div>
-            </details>
-          </section>
+          </details>
         </div>
         <footer id="detail-actions" class="detail-actions"></footer>
       </article>

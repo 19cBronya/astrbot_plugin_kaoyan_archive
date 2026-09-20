@@ -201,6 +201,7 @@ function renderDetail(detail) {
   const excluded = events.filter((event) => relationParts(event.relation).includes("excluded"));
   const visible = events.filter((event) => !relationParts(event.relation).includes("excluded"));
   $("detail-event-count").textContent = `${visible.length} 条`;
+  $("detail-conversation").open = false;
 
   const meta = $("detail-meta");
   meta.replaceChildren(
@@ -464,7 +465,7 @@ async function buildPdfExport(detail) {
     root.append(knowledge);
   }
 
-  const summary = pdfSection("题目总结", "ARCHIVE SUMMARY");
+  const summary = pdfSection("题目整理", "QUESTION NOTES");
   const summaryBody = document.createElement("div");
   summaryBody.className = "pdf-summary";
   appendMarkdownBlocks(summaryBody, detail.summary || detail.error || "暂无总结");

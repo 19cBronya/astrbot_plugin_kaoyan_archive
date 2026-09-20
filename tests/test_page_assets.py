@@ -102,6 +102,22 @@ def test_question_detail_displays_and_edits_the_overview() -> None:
     assert ".detail-overview p { display: grid;" not in stylesheet
 
 
+def test_question_detail_uses_clear_sections_and_collapsed_conversation() -> None:
+    document = (PAGE / "index.html").read_text(encoding="utf-8")
+    script = (PAGE / "app.js").read_text(encoding="utf-8")
+    stylesheet = (PAGE / "style.css").read_text(encoding="utf-8")
+
+    assert "一句话总结" in document
+    assert "题目概览" in document
+    assert "题目整理" in document
+    assert '<details id="detail-conversation"' in document
+    assert '<details id="detail-conversation" class="detail-section detail-conversation">' in document
+    assert '$("detail-conversation").open = false' in script
+    assert 'pdfSection("题目整理", "QUESTION NOTES")' in script
+    assert ".detail-conversation > summary" in stylesheet
+    assert ".detail-conversation-content" in stylesheet
+
+
 def test_timeline_uses_structured_markdown_without_preserved_blank_lines() -> None:
     script = (PAGE / "app.js").read_text(encoding="utf-8")
     stylesheet = (PAGE / "style.css").read_text(encoding="utf-8")

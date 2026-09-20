@@ -116,7 +116,8 @@ async def build_question(store: ArchiveStore) -> str:
 
 
 def test_archive_prompt_preserves_renderable_formula_delimiters() -> None:
-    assert ARCHIVE_PROMPT_VERSION == "archive-v7"
+    assert ARCHIVE_PROMPT_VERSION == "archive-v8"
+    assert "title 是“一句话总结”" in ARCHIVE_SYSTEM_PROMPT
     assert "overview" in ARCHIVE_SYSTEM_PROMPT
     assert '"problem"' in ARCHIVE_SYSTEM_PROMPT
     assert '"approach"' in ARCHIVE_SYSTEM_PROMPT
