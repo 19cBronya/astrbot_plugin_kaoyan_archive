@@ -11,7 +11,8 @@ import pytest
 ROOT = Path(__file__).parents[1]
 PAGE = ROOT / "pages" / "archive"
 KATEX = PAGE / "vendor" / "katex"
-HTML2PDF = PAGE / "vendor" / "html2pdf"
+SNAPDOM = PAGE / "vendor" / "snapdom"
+JSPDF = PAGE / "vendor" / "jspdf"
 
 
 def test_katex_is_loaded_only_from_local_page_assets() -> None:
@@ -104,30 +105,47 @@ def test_question_detail_can_export_an_a4_pdf_archive() -> None:
     assert "await loadImagePreview(attachment.sha256)" in script
     assert "renderMath(root)" in script
     assert "await waitForPdfAssets(root)" in script
-    assert "vendor/html2pdf/html2pdf.bundle.min.js" in document
-    assert 'typeof window.html2pdf !== "function"' in script
-    assert "await window.html2pdf().set({" in script
-    assert 'filename: `${pdfFileName(state.active)}.pdf`' in script
+    assert "vendor/snapdom/snapdom.js" in document
+    assert "vendor/jspdf/jspdf.umd.min.js" in document
+    assert 'typeof window.snapdom !== "function"' in script
+    assert "const capture = await window.snapdom(root" in script
+    assert "const canvas = await capture.toCanvas()" in script
+    assert "async function saveArchiveCanvasAsPdf" in script
     assert 'format: "a4"' in script
+    assert 'pdf.save(fileName, { returnPromise: true })' in script
     assert "window.print()" not in script
+    assert "window.html2pdf" not in script
     assert ".pdf-export.pdf-export-ready" in stylesheet
-    assert ".html2pdf__container .pdf-export.pdf-export-ready" in stylesheet
-    assert (HTML2PDF / "html2pdf.bundle.min.js").is_file()
-    assert (HTML2PDF / "LICENSE").is_file()
-    assert "html2pdf.js v0.14.0" in (
-        HTML2PDF / "html2pdf.bundle.min.js.LICENSE.txt"
+    assert (SNAPDOM / "snapdom.js").is_file()
+    assert (SNAPDOM / "LICENSE").is_file()
+    assert (SNAPDOM / "PATCHES.md").is_file()
+    assert (JSPDF / "jspdf.umd.min.js").is_file()
+    assert (JSPDF / "LICENSE").is_file()
+    assert 'createElement("iframe")' not in (
+        SNAPDOM / "snapdom.js"
     ).read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
-def test_vendored_html2pdf_bundle_loads_as_a_function() -> None:
-    script = (
-        "global.self=global;"
-        "const html2pdf=require(process.argv[1]);"
-        "if(typeof html2pdf!=='function')process.exit(2);"
-    )
+def test_vendored_pdf_bundles_load_without_a_browser_document() -> None:
+    script = r"""
+const fs = require('fs');
+global.window = global;
+global.navigator = {};
+global.self = global;
+eval(fs.readFileSync(process.argv[1], 'utf8'));
+if (typeof window.snapdom !== 'function') process.exit(2);
+const jspdf = require(process.argv[2]);
+if (typeof jspdf.jsPDF !== 'function') process.exit(3);
+"""
     subprocess.run(
-        ["node", "-e", script, str(HTML2PDF / "html2pdf.bundle.min.js")],
+        [
+            "node",
+            "-e",
+            script,
+            str(SNAPDOM / "snapdom.js"),
+            str(JSPDF / "jspdf.umd.min.js"),
+        ],
         check=True,
         cwd=ROOT,
     )

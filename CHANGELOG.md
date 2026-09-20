@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.14.1
+
+- 修复 AstrBot Plugin Page 在不含 `allow-same-origin` 的沙箱 iframe 中导出 PDF 时出现 `Blocked a frame with origin "null"` 的错误。
+- 移除依赖克隆 iframe 的 `html2pdf.js/html2canvas`，改用 SnapDOM 直接序列化当前归档节点，再由 jsPDF 在页面内切分并下载 A4 PDF。
+- 分页时尽量避开题目页眉、会话头、题图和块级公式，长对话仍可跨页；所有库继续随插件离线打包。
+
 ## v0.14.0
 
 - 题目详情新增“导出 PDF”，使用随插件离线打包的 `html2pdf.js 0.14.0` 直接生成并下载 A4 PDF，不依赖受限 Plugin Page iframe 中不可用的打印弹窗，也不要求 AstrBot 容器补装 Chromium 系统库。

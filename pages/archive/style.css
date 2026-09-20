@@ -275,7 +275,6 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
   line-height: 1.65;
 }
 .pdf-export.pdf-export-ready { display: block; position: fixed; left: -220mm; top: 0; width: 190mm; padding: 0; pointer-events: none; }
-.html2pdf__container .pdf-export.pdf-export-ready { position: static; left: auto; top: auto; width: 100%; }
 .pdf-export *, .pdf-export *::before, .pdf-export *::after { box-sizing: border-box; }
 .pdf-export .pdf-header { padding: 0 0 8mm; border-bottom: 1.2pt solid #116b55; break-inside: avoid; }
 .pdf-export .pdf-brand, .pdf-export .pdf-kicker { margin: 0; color: #116b55; font-size: 7.5pt; font-weight: 800; letter-spacing: 0.14em; }

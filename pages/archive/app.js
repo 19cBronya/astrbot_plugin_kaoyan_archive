@@ -280,28 +280,25 @@ async function exportActiveQuestionPdf() {
   try {
     toast("正在准备 A4 归档，请稍候…");
     const root = await buildPdfExport(state.active);
-    renderMath(root);
-    await waitForPdfAssets(root);
-    if (typeof window.html2pdf !== "function") throw new Error("PDF 组件未加载");
     root.classList.add("pdf-export-ready");
     root.setAttribute("aria-hidden", "false");
-    await window.html2pdf().set({
-      margin: [12, 10, 14, 10],
-      filename: `${pdfFileName(state.active)}.pdf`,
-      image: { type: "jpeg", quality: 0.96 },
-      html2canvas: {
-        scale: 2,
-        useCORS: false,
-        allowTaint: false,
-        backgroundColor: "#ffffff",
-        logging: false,
-      },
-      jsPDF: { unit: "mm", format: "a4", orientation: "portrait", compress: true },
-      pagebreak: {
-        mode: ["css", "legacy"],
-        avoid: [".pdf-header", ".pdf-event-head", ".pdf-attachment", ".math-block", ".katex-display"],
-      },
-    }).from(root).save();
+    renderMath(root);
+    await waitForPdfAssets(root);
+    if (typeof window.snapdom !== "function" || !window.jspdf?.jsPDF) {
+      throw new Error("PDF 组件未加载");
+    }
+    const cssHeight = Math.max(root.scrollHeight, root.getBoundingClientRect().height, 1);
+    const scale = Math.max(0.75, Math.min(2, 28000 / cssHeight));
+    const capture = await window.snapdom(root, {
+      scale,
+      dpr: 1,
+      backgroundColor: "#ffffff",
+      embedFonts: "auto",
+      cache: "full",
+      fast: false,
+    });
+    const canvas = await capture.toCanvas();
+    await saveArchiveCanvasAsPdf(canvas, root, `${pdfFileName(state.active)}.pdf`);
     toast("PDF 已生成并开始下载");
   } catch (error) {
     toast(error.message || "PDF 导出失败", true);
@@ -311,6 +308,112 @@ async function exportActiveQuestionPdf() {
     root.setAttribute("aria-hidden", "true");
     buttons.forEach((button) => { button.disabled = false; });
   }
+}
+
+async function saveArchiveCanvasAsPdf(canvas, root, fileName) {
+  if (!canvas?.width || !canvas?.height) throw new Error("归档页面渲染结果为空");
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF({
+    orientation: "portrait",
+    unit: "mm",
+    format: "a4",
+    compress: true,
+  });
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+  const margin = { top: 12, right: 10, bottom: 14, left: 10 };
+  const contentWidth = pageWidth - margin.left - margin.right;
+  const contentHeight = pageHeight - margin.top - margin.bottom;
+  const idealSliceHeight = canvas.width * contentHeight / contentWidth;
+  const avoidRanges = pdfAvoidRanges(root, canvas);
+  let sourceTop = 0;
+  let pageIndex = 0;
+
+  while (sourceTop < canvas.height) {
+    const proposedBottom = Math.min(canvas.height, sourceTop + idealSliceHeight);
+    const sourceBottom = adjustedPdfSliceBottom(
+      sourceTop,
+      proposedBottom,
+      canvas.height,
+      idealSliceHeight,
+      avoidRanges,
+    );
+    const sliceHeight = Math.max(1, Math.round(sourceBottom - sourceTop));
+    const slice = document.createElement("canvas");
+    slice.width = canvas.width;
+    slice.height = sliceHeight;
+    const context = slice.getContext("2d", { alpha: false });
+    if (!context) throw new Error("浏览器无法创建 PDF 画布");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, slice.width, slice.height);
+    context.drawImage(
+      canvas,
+      0,
+      Math.round(sourceTop),
+      canvas.width,
+      sliceHeight,
+      0,
+      0,
+      slice.width,
+      slice.height,
+    );
+    if (pageIndex > 0) pdf.addPage("a4", "portrait");
+    const renderedHeight = sliceHeight / canvas.width * contentWidth;
+    pdf.addImage(
+      slice.toDataURL("image/jpeg", 0.94),
+      "JPEG",
+      margin.left,
+      margin.top,
+      contentWidth,
+      renderedHeight,
+      undefined,
+      "FAST",
+    );
+    slice.width = 1;
+    slice.height = 1;
+    sourceTop = sourceBottom;
+    pageIndex += 1;
+  }
+  canvas.width = 1;
+  canvas.height = 1;
+  await pdf.save(fileName, { returnPromise: true });
+}
+
+function pdfAvoidRanges(root, canvas) {
+  const rootRect = root.getBoundingClientRect();
+  const cssHeight = Math.max(root.scrollHeight, rootRect.height, 1);
+  const scale = canvas.height / cssHeight;
+  const selectors = [
+    ".pdf-header",
+    ".pdf-section > h2",
+    ".pdf-event-head",
+    ".pdf-attachment",
+    ".math-block",
+    ".katex-display",
+  ];
+  return [...root.querySelectorAll(selectors.join(","))]
+    .map((element) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        top: Math.max(0, (rect.top - rootRect.top) * scale),
+        bottom: Math.min(canvas.height, (rect.bottom - rootRect.top) * scale),
+      };
+    })
+    .filter((range) => range.bottom > range.top)
+    .sort((left, right) => left.top - right.top);
+}
+
+function adjustedPdfSliceBottom(sourceTop, proposedBottom, totalHeight, pageHeight, ranges) {
+  if (proposedBottom >= totalHeight) return totalHeight;
+  const minimumUsefulPage = Math.min(pageHeight * 0.22, 320);
+  const crossing = ranges.filter((range) => (
+    range.top < proposedBottom
+    && range.bottom > proposedBottom
+    && range.bottom - range.top < pageHeight * 0.92
+    && range.top - sourceTop >= minimumUsefulPage
+  ));
+  if (!crossing.length) return proposedBottom;
+  return Math.max(sourceTop + 1, Math.min(...crossing.map((range) => range.top)));
 }
 
 async function buildPdfExport(detail) {
