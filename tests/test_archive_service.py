@@ -116,12 +116,13 @@ async def build_question(store: ArchiveStore) -> str:
 
 
 def test_archive_prompt_preserves_renderable_formula_delimiters() -> None:
-    assert ARCHIVE_PROMPT_VERSION == "archive-v6"
+    assert ARCHIVE_PROMPT_VERSION == "archive-v7"
     assert "overview" in ARCHIVE_SYSTEM_PROMPT
     assert '"problem"' in ARCHIVE_SYSTEM_PROMPT
     assert '"approach"' in ARCHIVE_SYSTEM_PROMPT
     assert '"focus"' in ARCHIVE_SYSTEM_PROMPT
     assert "不得省略、合并" in ARCHIVE_SYSTEM_PROMPT
+    assert "三项合计尽量控制在 200 字以内" in ARCHIVE_SYSTEM_PROMPT
     assert "$...$" in ARCHIVE_SYSTEM_PROMPT
     assert "$$...$$" in ARCHIVE_SYSTEM_PROMPT
     assert "完整保留" in ARCHIVE_SYSTEM_PROMPT

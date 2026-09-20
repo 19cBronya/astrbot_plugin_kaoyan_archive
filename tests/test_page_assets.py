@@ -84,6 +84,20 @@ def test_question_detail_drawer_uses_most_of_desktop_viewport() -> None:
     assert ".detail-drawer { width: 100%; }" in stylesheet
 
 
+def test_question_detail_displays_and_edits_the_overview() -> None:
+    document = (PAGE / "index.html").read_text(encoding="utf-8")
+    script = (PAGE / "app.js").read_text(encoding="utf-8")
+    stylesheet = (PAGE / "style.css").read_text(encoding="utf-8")
+
+    assert 'id="detail-overview"' in document
+    assert 'id="edit-overview"' in document
+    assert 'maxlength="300"' in document
+    assert "renderOverview(detail.overview)" in script
+    assert '$("edit-overview").value = state.active.overview || ""' in script
+    assert 'overview: $("edit-overview").value' in script
+    assert ".detail-overview {" in stylesheet
+
+
 def test_timeline_uses_structured_markdown_without_preserved_blank_lines() -> None:
     script = (PAGE / "app.js").read_text(encoding="utf-8")
     stylesheet = (PAGE / "style.css").read_text(encoding="utf-8")

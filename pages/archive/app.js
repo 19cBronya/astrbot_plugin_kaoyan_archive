@@ -194,6 +194,7 @@ function renderDetail(detail) {
   $("detail-view").classList.remove("hidden");
   $("detail-id").textContent = detail.public_id || detail.uuid;
   $("detail-title").textContent = detail.title || "未命名题目";
+  renderOverview(detail.overview);
   renderSummary(detail.summary || detail.error || "暂无总结");
   renderKnowledge(detail);
   const events = detail.events || [];
@@ -738,6 +739,34 @@ function knowledgeChip(label) {
   chip.className = "knowledge-chip";
   chip.textContent = inferInlineMath(label);
   return chip;
+}
+
+function renderOverview(value) {
+  const container = $("detail-overview");
+  container.replaceChildren();
+  const text = String(value || "").trim();
+  const match = text.match(
+    /^原题\s*[:：]\s*(.*?)\s*[；;]\s*思路\s*[:：]\s*(.*?)\s*[；;]\s*重点\s*[:：]\s*(.*)$/,
+  );
+  if (match) {
+    for (const [label, content] of [
+      ["原题", match[1]],
+      ["思路", match[2]],
+      ["重点", match[3]],
+    ]) {
+      const row = document.createElement("p");
+      const name = document.createElement("strong");
+      const body = document.createElement("span");
+      name.textContent = label;
+      body.textContent = inferInlineMath(content.trim() || "暂无");
+      row.append(name, body);
+      container.append(row);
+    }
+    return;
+  }
+  const paragraph = document.createElement("p");
+  paragraph.textContent = inferInlineMath(text || "暂无题目概览，可重新归档生成。");
+  container.append(paragraph);
 }
 
 function renderKnowledge(detail) {

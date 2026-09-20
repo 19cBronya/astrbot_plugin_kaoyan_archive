@@ -14,19 +14,19 @@ from .provider_fallback import (
 from .storage import ArchiveStore
 
 
-ARCHIVE_PROMPT_VERSION = "archive-v6"
-OVERVIEW_MAX_CHARS = 600
-OVERVIEW_PROBLEM_MAX_CHARS = 220
-OVERVIEW_APPROACH_MAX_CHARS = 220
-OVERVIEW_FOCUS_MAX_CHARS = 120
+ARCHIVE_PROMPT_VERSION = "archive-v7"
+OVERVIEW_MAX_CHARS = 300
+OVERVIEW_PROBLEM_MAX_CHARS = 80
+OVERVIEW_APPROACH_MAX_CHARS = 90
+OVERVIEW_FOCUS_MAX_CHARS = 60
 ARCHIVE_SYSTEM_PROMPT = r"""你是考研答疑归档器，只整理给定对话，不继续答题。
 返回严格 JSON 对象，字段为 subject、title、overview、knowledge_points、summary：
 - subject 必须从允许科目中选择；
 - title 用一句简洁中文概括题目；
-- overview 必须是 JSON 对象而不是字符串，并且必须同时包含 problem、approach、focus 三个非空字符串；不得省略、合并或用同一句话重复填充这三项：
-  - problem：忠实复述题目原题的关键已知条件和所求内容，不写解答结论，不超过 220 字；
-  - approach：概括大致解题思路，说明采用的方法、关键步骤或公式之间的关系，不展开冗长推导，不超过 220 字；
-  - focus：提炼本题最应关注的条件、公式、易错点或结论，使用简洁短语，不超过 120 字；
+- overview 是供题库快速浏览的简洁概览，不是题目总结；必须是 JSON 对象而不是字符串，并且必须同时包含 problem、approach、focus 三个非空字符串；不得省略、合并或用同一句话重复填充这三项，三项合计尽量控制在 200 字以内：
+  - problem：用一句话忠实概括原题的关键已知条件和所求内容，不逐句照抄题目，不写解答结论，不超过 80 字；
+  - approach：用一句话概括大致解题思路，只说明主要方法和关键步骤，不展开推导或罗列细节，不超过 90 字；
+  - focus：用简洁短语提炼最重要的条件、公式、易错点或结论，不重复知识点列表，不超过 60 字；
   - 三项中的每个公式片段都必须用 $...$ 包围；即使对话信息不足，也要依据已有原文分别填写，不能只返回其中一部分；
 - knowledge_points 是 1 至 8 个简洁的中文知识点字符串组成的数组；其中出现公式时必须用 $...$ 包围；
 - summary 使用 Markdown，依次整理题目、关键追问、解答结论和仍未解决点；

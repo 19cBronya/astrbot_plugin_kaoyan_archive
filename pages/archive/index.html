@@ -194,7 +194,7 @@
             </label>
             <label>
               <span>题目概览</span>
-              <textarea id="edit-overview" rows="5" maxlength="600" placeholder="原题：……；思路：……；重点：……"></textarea>
+              <textarea id="edit-overview" rows="4" maxlength="300" placeholder="原题：……；思路：……；重点：……"></textarea>
             </label>
             <label>
               <span>知识点</span>
@@ -208,6 +208,11 @@
           <p class="edit-note">这里只修改归档展示内容；题号和原始会话始终保持不变。保存前的版本会进入修订记录。</p>
         </form>
         <div id="detail-view">
+          <section class="detail-section">
+            <p class="section-kicker">QUESTION OVERVIEW</p>
+            <h3>题目概览</h3>
+            <div id="detail-overview" class="detail-overview"></div>
+          </section>
           <section class="detail-section">
             <p class="section-kicker">KNOWLEDGE POINTS</p>
             <h3>知识点</h3>

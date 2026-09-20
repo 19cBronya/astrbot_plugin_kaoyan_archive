@@ -1,7 +1,7 @@
 name: astrbot_plugin_kaoyan_archive
 display_name: 考研答疑归档
 desc: 仅在白名单私聊 UMO 中记录并归档答疑；支持把受限函数图与 Markdown/公式讲解合成为单张图片。
-version: v0.14.2
+version: v0.14.3
 author: 19cBronya
 repo: https://github.com/19cBronya/astrbot_plugin_kaoyan_archive
 astrbot_version: ">=4.27.2,<5"

@@ -2032,7 +2032,7 @@ class ArchiveStore:
                     )
                 public_id = f"{subject}{value:04d}"
             now = utc_timestamp()
-            cleaned_overview = re.sub(r"\s+", " ", overview).strip()[:600]
+            cleaned_overview = re.sub(r"\s+", " ", overview).strip()[:300]
             if not cleaned_overview:
                 cleaned_overview = self._overview_from_text(summary, title)
             cleaned_title = title.strip()[:200]
@@ -2595,7 +2595,7 @@ class ArchiveStore:
         cleaned_summary = summary.strip()[:200000]
         if not cleaned_title or not cleaned_summary:
             raise ValueError("title and summary are required")
-        cleaned_overview = re.sub(r"\s+", " ", overview).strip()[:600]
+        cleaned_overview = re.sub(r"\s+", " ", overview).strip()[:300]
         if not cleaned_overview:
             cleaned_overview = self._overview_from_text(cleaned_summary, cleaned_title)
         cleaned_points = [

@@ -939,7 +939,7 @@ class KaoyanArchivePlugin(Star):
             return error_response("subject is not configured", status_code=400)
         if not isinstance(title, str) or not title.strip() or len(title) > 200:
             return error_response("invalid title", status_code=400)
-        if not isinstance(overview, str) or len(overview) > 600:
+        if not isinstance(overview, str) or len(overview) > 300:
             return error_response("invalid overview", status_code=400)
         if not isinstance(summary, str) or not summary.strip() or len(summary) > 200000:
             return error_response("invalid summary", status_code=400)
