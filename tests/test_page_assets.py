@@ -96,6 +96,10 @@ def test_question_detail_displays_and_edits_the_overview() -> None:
     assert '$("edit-overview").value = state.active.overview || ""' in script
     assert 'overview: $("edit-overview").value' in script
     assert ".detail-overview {" in stylesheet
+    assert 'row.className = "detail-overview-row"' in script
+    assert 'paragraph.className = "detail-overview-plain"' in script
+    assert ".detail-overview-row { display: grid;" in stylesheet
+    assert ".detail-overview p { display: grid;" not in stylesheet
 
 
 def test_timeline_uses_structured_markdown_without_preserved_blank_lines() -> None:

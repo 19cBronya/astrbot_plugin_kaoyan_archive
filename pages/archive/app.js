@@ -755,6 +755,7 @@ function renderOverview(value) {
       ["重点", match[3]],
     ]) {
       const row = document.createElement("p");
+      row.className = "detail-overview-row";
       const name = document.createElement("strong");
       const body = document.createElement("span");
       name.textContent = label;
@@ -765,6 +766,7 @@ function renderOverview(value) {
     return;
   }
   const paragraph = document.createElement("p");
+  paragraph.className = "detail-overview-plain";
   paragraph.textContent = inferInlineMath(text || "暂无题目概览，可重新归档生成。");
   container.append(paragraph);
 }
