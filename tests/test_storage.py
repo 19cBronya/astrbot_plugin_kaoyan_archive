@@ -349,6 +349,202 @@ def test_cancelled_interval_is_skipped_but_remains_assignable(tmp_path: Path) ->
     ]
 
 
+def test_cancel_interval_includes_soft_instructions_but_not_framework_trigger(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    umo = "default:FriendMessage:instruction-cancel"
+
+    async def add(**overrides) -> int:
+        values = {
+            "umo": umo,
+            "direction": "user",
+            "platform_message_id": "",
+            "parent_event_id": None,
+            "sender_id": "user",
+            "sender_name": "user",
+            "kind": "instruction",
+            "text": "MMU 是在哪里讲的",
+            "body_text": "",
+            "components": [],
+            "raw": {},
+            "is_command": True,
+            "is_boundary": False,
+            "boundary_rule": "query_location",
+            "created_at": 1,
+            "provider_id": "test",
+            "model_id": "test",
+            "prompt_version": "test",
+        }
+        values.update(overrides)
+        return await store.add_event(**values)
+
+    user_id = asyncio.run(add())
+    assistant_id = asyncio.run(
+        add(
+            direction="assistant",
+            parent_event_id=user_id,
+            sender_id="bot",
+            sender_name="bot",
+            kind="assistant",
+            text="MMU 在操作系统内存管理和计组虚拟存储器中都会讲。",
+            boundary_rule="query_location",
+            created_at=2,
+        )
+    )
+    trigger_id = asyncio.run(
+        add(
+            text="cancel",
+            boundary_rule="framework-command:cancel",
+            created_at=3,
+        )
+    )
+    boundary_id = asyncio.run(
+        add(
+            direction="control",
+            kind="boundary",
+            text="cancel",
+            is_boundary=True,
+            boundary_rule="/cancel",
+            created_at=4,
+        )
+    )
+
+    cancelled = asyncio.run(
+        store.cancel_interval(umo=umo, boundary_event_id=boundary_id)
+    )
+    listed = asyncio.run(
+        store.list_messages(umo=umo, ownership="cancelled", limit=20)
+    )
+
+    assert cancelled["event_count"] == 2
+    assert [item["id"] for item in listed["items"]] == [assistant_id, user_id]
+    assert trigger_id not in {item["id"] for item in listed["items"]}
+
+
+def test_initialize_repairs_instruction_events_omitted_by_old_cancellations(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path)
+    umo = "default:FriendMessage:legacy-instruction-cancel"
+    user_id = asyncio.run(
+        store.add_event(
+            umo=umo,
+            direction="user",
+            platform_message_id="legacy-user",
+            parent_event_id=None,
+            sender_id="user",
+            sender_name="user",
+            kind="instruction",
+            text="MMU 是在哪里讲的",
+            body_text="",
+            components=[],
+            raw={},
+            is_command=True,
+            is_boundary=False,
+            boundary_rule="query_location",
+            created_at=1,
+            provider_id="test",
+            model_id="test",
+            prompt_version="test",
+        )
+    )
+    assistant_id = asyncio.run(
+        store.add_event(
+            umo=umo,
+            direction="assistant",
+            platform_message_id="legacy-answer",
+            parent_event_id=user_id,
+            sender_id="bot",
+            sender_name="bot",
+            kind="assistant",
+            text="MMU 在两门课程中都会涉及。",
+            body_text="",
+            components=[],
+            raw={},
+            is_command=True,
+            is_boundary=False,
+            boundary_rule="query_location",
+            created_at=2,
+            provider_id="test",
+            model_id="test",
+            prompt_version="test",
+        )
+    )
+    trigger_id = asyncio.run(
+        store.add_event(
+            umo=umo,
+            direction="user",
+            platform_message_id="legacy-cancel-command",
+            parent_event_id=None,
+            sender_id="user",
+            sender_name="user",
+            kind="instruction",
+            text="cancel",
+            body_text="",
+            components=[],
+            raw={},
+            is_command=True,
+            is_boundary=False,
+            boundary_rule="framework-command:cancel",
+            created_at=3,
+            provider_id="",
+            model_id="",
+            prompt_version="",
+        )
+    )
+    boundary_id = asyncio.run(
+        store.add_event(
+            umo=umo,
+            direction="control",
+            platform_message_id="",
+            parent_event_id=None,
+            sender_id="user",
+            sender_name="user",
+            kind="boundary",
+            text="cancel",
+            body_text="",
+            components=[],
+            raw={},
+            is_command=True,
+            is_boundary=True,
+            boundary_rule="/cancel",
+            created_at=4,
+            provider_id="",
+            model_id="",
+            prompt_version="",
+        )
+    )
+    with sqlite3.connect(store.db_path) as db:
+        db.execute(
+            """
+            INSERT INTO cancellations(
+                boundary_event_id,umo,start_event_id,event_count,created_at
+            ) VALUES(?,?,NULL,0,?)
+            """,
+            (boundary_id, umo, 4),
+        )
+        db.execute("DELETE FROM schema_migrations WHERE version=9")
+
+    asyncio.run(store.initialize())
+    listed = asyncio.run(
+        store.list_messages(umo=umo, ownership="cancelled", limit=20)
+    )
+    with sqlite3.connect(store.db_path) as db:
+        event_count = db.execute(
+            "SELECT event_count FROM cancellations WHERE boundary_event_id=?",
+            (boundary_id,),
+        ).fetchone()[0]
+        repair_audit = db.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action='repair_cancel_interval'"
+        ).fetchone()[0]
+
+    assert event_count == 2
+    assert [item["id"] for item in listed["items"]] == [assistant_id, user_id]
+    assert trigger_id not in {item["id"] for item in listed["items"]}
+    assert repair_audit == 1
+
+
 def test_subject_counter_is_transactional(tmp_path: Path) -> None:
     store = make_store(tmp_path)
     umo = "default:FriendMessage:counter"
@@ -471,7 +667,7 @@ def test_schema_migrates_existing_questions_for_derived_archive_fields(tmp_path:
         db.execute("ALTER TABLE questions DROP COLUMN knowledge_points_json")
         db.execute("ALTER TABLE questions DROP COLUMN overview")
         db.execute("ALTER TABLE questions DROP COLUMN is_manual")
-        db.execute("DELETE FROM schema_migrations WHERE version IN (2,3,4,5,6,7,8)")
+        db.execute("DELETE FROM schema_migrations WHERE version IN (2,3,4,5,6,7,8,9)")
 
     asyncio.run(store.initialize())
     detail = asyncio.run(store.question_detail(question["uuid"]))
@@ -490,7 +686,7 @@ def test_schema_migrates_existing_questions_for_derived_archive_fields(tmp_path:
     assert "overview" in columns
     assert "is_manual" in columns
     assert "rerun_requested" in archive_job_columns
-    assert 8 in versions
+    assert 9 in versions
     assert "question_revisions" in tables
     assert {
         "classification_jobs",

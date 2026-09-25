@@ -59,7 +59,7 @@ def test_question_is_classified_by_llm() -> None:
     assert result.body_text == "为什么进程切换比线程切换慢？"
     assert result.provider_id == "classifier-provider"
     assert result.model_id == "classifier-model"
-    assert result.prompt_version.startswith("message-classifier-v8:")
+    assert result.prompt_version.startswith("message-classifier-v9:")
     assert len(context.calls) == 1
     assert context.calls[0]["system_prompt"] == CLASSIFIER_SYSTEM_PROMPT
 
@@ -260,6 +260,24 @@ def test_unrelated_reminder_is_an_excluded_instruction() -> None:
     assert result.body_text == ""
     assert result.intent == "unrelated_request"
     assert "五小时后提醒我吃药" in context.calls[0]["system_prompt"]
+
+
+def test_subject_knowledge_location_query_is_corrected_to_question() -> None:
+    result, context = classify(
+        {
+            "kind": "instruction",
+            "content": "",
+            "intent": "query_location",
+            "confidence": 0.99,
+        },
+        "MMU 是在哪里讲的？",
+    )
+
+    assert result.kind is MessageKind.QUESTION
+    assert result.body_text == "MMU 是在哪里讲的？"
+    assert result.intent == "knowledge_location_question"
+    assert "classification corrected" in result.warning
+    assert "哪一章" in context.calls[0]["system_prompt"]
 
 
 def test_soft_cancel_marks_the_current_interval_invalid() -> None:

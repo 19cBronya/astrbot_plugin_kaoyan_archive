@@ -32,7 +32,7 @@ from .kaoyan_archive.utils import json_safe, utc_timestamp
 
 
 PLUGIN_NAME = "astrbot_plugin_kaoyan_archive"
-PLUGIN_VERSION = "0.14.1"
+PLUGIN_VERSION = "0.15.1"
 INLINE_IMAGE_MIME_TYPES = frozenset(
     {"image/jpeg", "image/png", "image/gif", "image/webp", "image/avif"}
 )

@@ -12,7 +12,7 @@ from .attachments import CapturedAttachment
 from .utils import canonical_json, utc_timestamp
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 class ArchiveStore:
@@ -308,6 +308,12 @@ class ArchiveStore:
                     "ALTER TABLE archive_jobs ADD COLUMN rerun_requested "
                     "INTEGER NOT NULL DEFAULT 0 CHECK (rerun_requested IN (0, 1))"
                 )
+            cancellation_backfill_pending = not db.execute(
+                "SELECT 1 FROM schema_migrations WHERE version=?",
+                (SCHEMA_VERSION,),
+            ).fetchone()
+            if cancellation_backfill_pending:
+                self._backfill_cancelled_interval_events(db)
             db.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
                 (SCHEMA_VERSION, utc_timestamp()),
@@ -1767,20 +1773,12 @@ class ArchiveStore:
                 (umo, boundary_event_id, umo, boundary_event_id),
             ).fetchone()["boundary_id"]
             start_id = int(previous or 0)
-            rows = db.execute(
-                """
-                SELECT e.id FROM events e
-                WHERE e.umo=? AND e.id>? AND e.id<?
-                  AND e.is_command=0 AND e.is_boundary=0
-                  AND NOT EXISTS(
-                      SELECT 1 FROM question_events qe
-                      WHERE qe.event_id=e.id
-                        AND qe.relation IN ('primary','supplement','answer')
-                  )
-                ORDER BY e.id
-                """,
-                (umo, start_id, boundary_event_id),
-            ).fetchall()
+            rows = self._cancellable_interval_rows(
+                db,
+                umo=umo,
+                start_event_id=start_id,
+                boundary_event_id=boundary_event_id,
+            )
             now = utc_timestamp()
             db.execute(
                 """
@@ -1821,6 +1819,98 @@ class ArchiveStore:
                     (boundary_event_id,),
                 ).fetchone()
             )
+
+    @staticmethod
+    def _cancellable_interval_rows(
+        db: sqlite3.Connection,
+        *,
+        umo: str,
+        start_event_id: int,
+        boundary_event_id: int,
+    ) -> list[sqlite3.Row]:
+        return db.execute(
+            """
+            SELECT e.id FROM events e
+            WHERE e.umo=? AND e.id>? AND e.id<?
+              AND e.direction IN ('user','assistant')
+              AND e.is_boundary=0
+              AND NOT (
+                  e.direction='user'
+                  AND e.boundary_rule LIKE 'framework-command:%'
+              )
+              AND NOT EXISTS(
+                  SELECT 1 FROM question_events qe
+                  WHERE qe.event_id=e.id
+                    AND qe.relation IN ('primary','supplement','answer')
+              )
+            ORDER BY e.id
+            """,
+            (umo, start_event_id, boundary_event_id),
+        ).fetchall()
+
+    def _backfill_cancelled_interval_events(self, db: sqlite3.Connection) -> None:
+        cancellations = db.execute(
+            """
+            SELECT boundary_event_id,umo,start_event_id,event_count
+            FROM cancellations ORDER BY boundary_event_id
+            """
+        ).fetchall()
+        for cancellation in cancellations:
+            boundary_event_id = int(cancellation["boundary_event_id"])
+            rows = self._cancellable_interval_rows(
+                db,
+                umo=str(cancellation["umo"]),
+                start_event_id=int(cancellation["start_event_id"] or 0),
+                boundary_event_id=boundary_event_id,
+            )
+            next_ordinal = int(
+                db.execute(
+                    """
+                    SELECT COALESCE(MAX(ordinal), -1) + 1 AS value
+                    FROM cancelled_events WHERE boundary_event_id=?
+                    """,
+                    (boundary_event_id,),
+                ).fetchone()["value"]
+            )
+            inserted_ids: list[int] = []
+            for row in rows:
+                event_id = int(row["id"])
+                cursor = db.execute(
+                    """
+                    INSERT OR IGNORE INTO cancelled_events(
+                        boundary_event_id,event_id,ordinal
+                    ) VALUES(?,?,?)
+                    """,
+                    (boundary_event_id, event_id, next_ordinal),
+                )
+                if cursor.rowcount:
+                    inserted_ids.append(event_id)
+                    next_ordinal += 1
+            count = int(
+                db.execute(
+                    """
+                    SELECT COUNT(*) AS count FROM cancelled_events
+                    WHERE boundary_event_id=?
+                    """,
+                    (boundary_event_id,),
+                ).fetchone()["count"]
+            )
+            if count != int(cancellation["event_count"]):
+                db.execute(
+                    "UPDATE cancellations SET event_count=? WHERE boundary_event_id=?",
+                    (count, boundary_event_id),
+                )
+            if inserted_ids or count != int(cancellation["event_count"]):
+                self._audit(
+                    db,
+                    "repair_cancel_interval",
+                    "event",
+                    str(boundary_event_id),
+                    {
+                        "inserted_event_ids": inserted_ids,
+                        "event_count": count,
+                    },
+                )
 
     async def question_source(self, question_uuid: str) -> dict[str, Any] | None:
         return self._question_source_sync(question_uuid)
