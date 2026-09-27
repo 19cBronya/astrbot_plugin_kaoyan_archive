@@ -11,6 +11,7 @@ from .provider_fallback import (
     ProviderFallbackExhausted,
     call_with_provider_fallback,
     format_provider_failures,
+    format_provider_target,
 )
 
 
@@ -179,7 +180,9 @@ class MessageClassifier:
             if failures:
                 warning = self._merge_warning(
                     result.warning,
-                    f"模型已降级：{format_provider_failures(failures)}",
+                    f"模型已降级至 "
+                    f"{format_provider_target(result.provider_id, result.model_id)}；"
+                    f"失败链路：{format_provider_failures(failures)}",
                 )
                 return replace(result, warning=warning)
             return result

@@ -5,6 +5,7 @@ import asyncio
 from kaoyan_archive.provider_fallback import (
     call_with_provider_fallback,
     configured_fallback_provider_ids,
+    format_provider_target,
 )
 
 
@@ -62,3 +63,12 @@ def test_fallback_list_deduplicates_and_keeps_legacy_single_value() -> None:
     )
 
     assert result == ["backup-one", "backup-two", "legacy-backup"]
+
+
+def test_provider_target_includes_actual_runtime_model() -> None:
+    assert format_provider_target("backup-provider", "gpt-5.6-terra") == (
+        "backup-provider/gpt-5.6-terra"
+    )
+    assert format_provider_target("gpt-5.6-terra", "gpt-5.6-terra") == (
+        "gpt-5.6-terra"
+    )

@@ -191,7 +191,8 @@ def test_archive_uses_backup_before_umo_provider(tmp_path: Path) -> None:
     assert detail["provider_id"] == "backup-provider"
     assert detail["model_id"] == "backup-model"
     assert detail["knowledge_points"] == ["进程状态", "线程调度"]
-    assert "模型已降级" in result.warning
+    assert "模型已降级至 backup-provider/backup-model" in result.warning
+    assert "失败链路：primary-archive" in result.warning
     assert [call["chat_provider_id"] for call in context.calls] == [
         "primary-archive",
         "backup-provider",

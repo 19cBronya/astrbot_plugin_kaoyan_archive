@@ -10,6 +10,7 @@ from .provider_fallback import (
     ProviderFallbackExhausted,
     call_with_provider_fallback,
     format_provider_failures,
+    format_provider_target,
 )
 from .storage import ArchiveStore
 
@@ -106,7 +107,8 @@ class ArchiveService:
                 if failures:
                     warning = self._merge_warning(
                         warning,
-                        f"模型已降级：{format_provider_failures(failures)}",
+                        f"模型已降级至 {format_provider_target(provider_id, model_id)}；"
+                        f"失败链路：{format_provider_failures(failures)}",
                     )
             except ProviderFallbackExhausted as exc:
                 if is_rearchive:

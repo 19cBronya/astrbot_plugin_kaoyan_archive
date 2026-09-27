@@ -97,6 +97,15 @@ def format_provider_failures(failures: list[ProviderFailure] | tuple[ProviderFai
     return "；".join(failure.describe() for failure in failures)
 
 
+def format_provider_target(provider_id: str, model_id: str) -> str:
+    """Describe the successful fallback using runtime response metadata when available."""
+    provider = str(provider_id or "").strip()
+    model = str(model_id or "").strip()
+    if provider and model and model != provider and model not in provider:
+        return f"{provider}/{model}"
+    return provider or model or "未知 Provider/模型"
+
+
 def _failure(provider_id: str, exc: Exception) -> ProviderFailure:
     return ProviderFailure(
         provider_id=provider_id,

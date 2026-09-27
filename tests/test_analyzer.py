@@ -374,7 +374,8 @@ def test_classifier_uses_backup_before_umo_provider() -> None:
         "backup-provider",
     ]
     assert context.provider_lookups == 0
-    assert "模型已降级" in result.warning
+    assert "模型已降级至 backup-provider/classifier-model" in result.warning
+    assert "失败链路：primary-classifier" in result.warning
     assert "primary unavailable" in result.warning
 
 
@@ -412,3 +413,5 @@ def test_classifier_falls_back_to_umo_after_all_backup_failures() -> None:
         "classifier-provider",
     ]
     assert context.provider_lookups == 1
+    assert "模型已降级至 classifier-provider/classifier-model" in result.warning
+    assert "失败链路：primary-classifier" in result.warning
